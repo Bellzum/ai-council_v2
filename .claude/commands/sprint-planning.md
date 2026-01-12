@@ -1,0 +1,1334 @@
+# Sprint Planning Workflow
+
+**Project**: ai-council
+**Workflow**: Sprint Planning
+**Purpose**: Plan a sprint by analyzing backlog, reviewing architecture, and creating work items
+
+## Output Formatting Requirements
+
+**IMPORTANT**: Use actual Unicode emojis in reports, NOT GitHub-style shortcodes.
+
+---
+
+## Workflow Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  SPRINT PLANNING - Agent Orchestration                                      │
+│                                                                             │
+│  Step 1: /business-analyst → Prioritized backlog                           │
+│  Step 1.5: Extract EPICs from sprint scope                                 │
+│  Step 1.6: /qa-tester → Generate test plans for EPICs                      │
+│  Step 1.7: Attach test plans to EPIC work items                            │
+│  Step 2: /architect → Architecture review                                  │
+│  Step 3: /security-specialist → Security review                            │
+│  Step 4: /senior-engineer → Estimation & breakdown                         │
+│  Step 5: /scrum-master → Sprint plan assembly                              │
+│  Step 6: Human Approval Gate                                               │
+│  Step 7: Work Item Creation                                                │
+│                                                                             │
+│  Each agent command spawns a FRESH CONTEXT WINDOW via Task tool            │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Initialize Workflow
+
+```python
+# Initialize work tracking adapter
+import sys
+sys.path.insert(0, ".claude/skills")
+from work_tracking import get_adapter
+
+adapter = get_adapter()
+print(f"📋 Work Tracking: {adapter.platform}")
+
+# Get sprint information
+sprint_number = input("Sprint number: ")
+team_capacity = int(input("Team capacity (story points): "))
+
+print(f"📋 Planning Sprint {sprint_number}")
+print(f"👥 Team capacity: {team_capacity} points")
+
+# Optional: Non-interactive mode - set variables instead of prompts
+# This enables automated sprint planning without user interaction
+#
+# To use non-interactive mode, set these variables before running the workflow:
+#   prioritize_epic_ids = [1001, 1002]  # Prioritize specific EPIC IDs (moved to front of queue)
+#   exclude_epic_ids = [1005, 1006]  # Exclude specific EPIC IDs from sprint planning
+#
+# If these variables are set, the workflow will use these values to filter/prioritize EPICs.
+#
+# Validation constraints:
+#   - prioritize_epic_ids: list of EPIC IDs (optional, default: [] = no prioritization)
+#   - exclude_epic_ids: list of EPIC IDs (optional, default: [] = no exclusions)
+#
+# Example for automated planning:
+#   prioritize_epic_ids = [1001, 1002]
+#   exclude_epic_ids = [1005, 1006]
+#
+# Leave unset (or set to empty list) for interactive mode.
+# Check if variables are defined; if not, use defaults for interactive mode
+try:
+    prioritize_epic_ids
+except NameError:
+    prioritize_epic_ids = []  # No prioritization
+
+try:
+    exclude_epic_ids
+except NameError:
+    exclude_epic_ids = []  # No exclusions
+```
+
+---
+
+## Step 1: Prioritize Backlog
+
+**Call `/business-analyst` with the following task:**
+
+```
+## YOUR TASK: Prepare Prioritized Backlog
+
+Analyze the backlog and prepare a prioritized list for Sprint {sprint_number}.
+
+### Project Context
+- Project: ai-council
+- Type: web-application
+- Tech Stack: Python
+
+### Available Backlog Items
+{Query adapter for Features where State='New' or State='Ready' and not assigned to a sprint:
+ backlog_items = adapter.query_work_items(
+     work_item_type='Feature',
+     filters={'System.State': ['New', 'Ready'], 'System.IterationPath': None}
+ )
+}
+
+### For Each Backlog Item, Analyze:
+
+1. **Business Value**
+   - Revenue impact (High/Medium/Low)
+   - Customer impact (High/Medium/Low)
+   - Strategic alignment (High/Medium/Low)
+   - Overall Business Value Score (1-100)
+
+2. **Priority Recommendation**
+   - P0: Must have this sprint
+   - P1: Should have this sprint
+   - P2: Nice to have
+   - P3: Can wait
+
+3. **Dependencies**
+   - What must be done before this?
+   - What does this block?
+
+### Output Format
+
+Return as JSON:
+```json
+{
+  "prioritized_backlog": [
+    {
+      "id": "FEATURE-001",
+      "title": "...",
+      "business_value_score": 85,
+      "priority": "P0",
+      "dependencies": [],
+      "recommendation": "Include in sprint"
+    }
+  ],
+  "recommended_for_sprint": ["FEATURE-001", "FEATURE-002"],
+  "total_points_recommended": 25
+}
+```
+```
+
+**After the agent completes:**
+- Parse the JSON output
+- Store prioritized backlog
+- Note recommended items for sprint
+
+---
+
+## Step 1.5: Extract EPICs from Sprint Scope
+
+**CRITICAL**: Query work tracking adapter for Epic work items included in sprint scope to enable test plan generation (VISION.md Pillar #2: External Source of Truth).
+
+```python
+# Extract EPIC IDs from prioritized backlog
+print(f"\n🔍 Extracting EPICs from sprint scope...")
+print("=" * 80)
+
+epic_ids = []
+epic_data = []
+
+# Get EPIC IDs from prioritized backlog items
+for item in prioritized_backlog.get('prioritized_backlog', []):
+    item_id = item.get('id')
+
+    # Query adapter to get full work item details (including type)
+    try:
+        work_item = adapter.get_work_item(item_id)
+
+        if work_item:
+            # Check if this is an EPIC
+            work_item_type = work_item.get('type') or work_item.get('fields', {}).get('System.WorkItemType')
+
+            if work_item_type == 'Epic':
+                epic_ids.append(item_id)
+                print(f"✅ Found EPIC: #{item_id} - {work_item.get('title') or work_item.get('fields', {}).get('System.Title')}")
+    except Exception as e:
+        print(f"⚠️  Failed to query work item {item_id}: {e}")
+
+# Query adapter for full EPIC details including child FEATURES
+print(f"\n📋 Querying adapter for EPIC metadata...")
+
+for epic_id in epic_ids:
+    try:
+        # Get full EPIC work item
+        epic = adapter.get_work_item(epic_id)
+
+        if not epic:
+            print(f"⚠️  EPIC #{epic_id} not found in adapter")
+            continue
+
+        # Extract EPIC metadata
+        fields = epic.get('fields', {})
+
+        epic_metadata = {
+            'id': epic_id,
+            'title': epic.get('title') or fields.get('System.Title', ''),
+            'description': epic.get('description') or fields.get('System.Description', ''),
+            'acceptance_criteria': fields.get('Microsoft.VSTS.Common.AcceptanceCriteria', ''),
+            'state': epic.get('state') or fields.get('System.State', ''),
+            'child_features': []
+        }
+
+        # Query for child FEATURES
+        # For Azure DevOps: query relations
+        # For file-based: query child_ids
+        child_ids = epic.get('child_ids', [])
+
+        # If no child_ids in root, check relations (Azure DevOps pattern)
+        if not child_ids:
+            relations = epic.get('relations', [])
+            for relation in relations:
+                rel_type = relation.get('rel', '')
+                # Azure DevOps: System.LinkTypes.Hierarchy-Forward
+                # File-based: parent-child
+                if 'Hierarchy-Forward' in rel_type or 'child' in rel_type.lower():
+                    # Extract target ID from URL or direct reference
+                    target_url = relation.get('url', '')
+                    if target_url:
+                        # Extract work item ID from URL (last segment)
+                        child_id = target_url.split('/')[-1]
+                        child_ids.append(child_id)
+                    elif 'target_id' in relation:
+                        child_ids.append(relation['target_id'])
+
+        # Query each child to verify it's a FEATURE
+        for child_id in child_ids:
+            try:
+                child = adapter.get_work_item(child_id)
+                if child:
+                    child_type = child.get('type') or child.get('fields', {}).get('System.WorkItemType')
+
+                    # Only include FEATUREs in child_features list
+                    if child_type == 'Feature':
+                        child_title = child.get('title') or child.get('fields', {}).get('System.Title', '')
+                        epic_metadata['child_features'].append({
+                            'id': child_id,
+                            'title': child_title
+                        })
+                        print(f"  ├─ FEATURE #{child_id}: {child_title}")
+            except Exception as e:
+                print(f"  ⚠️  Failed to query child work item {child_id}: {e}")
+
+        epic_data.append(epic_metadata)
+        print(f"✅ Extracted EPIC #{epic_id}: {epic_metadata['title']} ({len(epic_metadata['child_features'])} child features)")
+
+    except Exception as e:
+        print(f"❌ Failed to extract EPIC #{epic_id}: {e}")
+
+# Output EPIC extraction summary
+print(f"\n📊 EPIC Extraction Summary:")
+print(f"   EPICs found: {len(epic_data)}")
+print(f"   Total child FEATUREs: {sum(len(e['child_features']) for e in epic_data)}")
+
+# Store EPIC data in workflow state for use in test plan generation
+# This enables /qa-engineer to generate comprehensive test plans covering EPICs
+epic_extraction_state = {
+    'epic_ids': epic_ids,
+    'epic_data': epic_data,
+    'extraction_timestamp': datetime.now().isoformat()
+}
+
+# Checkpoint: Save EPIC data to workflow state
+# (In production, this would be saved via StateManager)
+print(f"\n💾 EPIC data stored in workflow state for test plan generation")
+print(f"=" * 80)
+```
+
+---
+
+## Step 1.6: Generate Test Plans for EPICs
+
+**CRITICAL**: For each EPIC extracted in Step 1.5, spawn the qa-tester agent to generate comprehensive acceptance test plans. Write test plans to `.claude/acceptance-tests/` directory for later attachment to work items.
+
+```python
+import os
+import json
+from datetime import datetime
+
+# Create .claude/acceptance-tests/ directory if it doesn't exist
+test_plans_dir = ".claude/acceptance-tests"
+if not os.path.exists(test_plans_dir):
+    try:
+        os.makedirs(test_plans_dir, exist_ok=True)
+        print(f"\n📁 Created directory: {test_plans_dir}")
+    except Exception as e:
+        print(f"❌ ERROR: Failed to create directory {test_plans_dir}: {e}")
+        import sys
+        sys.exit(1)
+
+print(f"\n🧪 Generating acceptance test plans for {len(epic_data)} EPICs...")
+print("=" * 80)
+print("CRITICAL: Spawning /qa-tester agent for each EPIC to generate blackbox test plans")
+print("=" * 80)
+
+test_plan_files = []
+
+for epic in epic_data:
+    epic_id = epic.get('id')
+    epic_title = epic.get('title', 'Unknown EPIC')
+
+    print(f"\n📋 Generating test plan for EPIC #{epic_id}: {epic_title}")
+    print(f"   Child Features: {len(epic.get('child_features', []))}")
+
+    # Prepare EPIC data for qa-tester agent
+    epic_input = {
+        'epic': {
+            'id': epic_id,
+            'title': epic_title,
+            'summary': epic.get('description', ''),
+            'acceptance_criteria': epic.get('acceptance_criteria', ''),
+            'state': epic.get('state', '')
+        },
+        'features': epic.get('child_features', [])
+    }
+
+    # Spawn qa-tester agent via Task tool to generate test plan
+    print(f"   🤖 Spawning /qa-tester agent for EPIC #{epic_id}...")
+
+    # IMPORTANT: In actual execution, this would be:
+    # from claude_code import Task
+    # test_plan_result = Task(
+    #     subagent_type="qa-tester",
+    #     description=f"Generate test plan for EPIC #{epic_id}",
+    #     prompt=f"""
+    #     ## YOUR TASK: Generate Acceptance Test Plan
+    #
+    #     Generate a comprehensive blackbox acceptance test plan for the following EPIC.
+    #
+    #     ### EPIC Details
+    #     {json.dumps(epic_input, indent=2)}
+    #
+    #     ### Output Requirements
+    #     Return valid JSON with the test plan following the format specified in your agent definition.
+    #     Include test_plan_markdown field with the full markdown test plan.
+    #     """
+    # )
+
+    # For template rendering purposes, show the pattern:
+    print(f"""
+    Task: Spawn /qa-tester agent
+    Input: EPIC #{epic_id} with {len(epic.get('child_features', []))} child features
+    Output: JSON with test plan and test_plan_markdown field
+    """)
+
+    # In actual execution, parse the JSON response from qa-tester agent
+    # try:
+    #     test_plan_json = json.loads(test_plan_result.result)
+    #     test_plan_markdown = test_plan_json.get('test_plan', {}).get('test_plan_markdown', '')
+    # except json.JSONDecodeError as e:
+    #     print(f"   ❌ ERROR: Failed to parse JSON from qa-tester agent for EPIC #{epic_id}: {e}")
+    #     print(f"      Agent may have returned invalid JSON. Check agent output.")
+    #     continue
+    # except Exception as e:
+    #     print(f"   ❌ ERROR: Failed to generate test plan for EPIC #{epic_id}: {e}")
+    #     continue
+
+    # Placeholder for demonstration (in actual execution, use qa-tester agent output)
+    test_plan_markdown = f"""# EPIC Acceptance Test Plan: {epic_title}
+
+## EPIC Overview
+- **EPIC ID**: {epic_id}
+- **EPIC Title**: {epic_title}
+- **EPIC Summary**: {epic.get('description', 'N/A')}
+
+[Test plan generated by /qa-tester agent would appear here]
+"""
+
+    # Write test plan to file
+    test_plan_filename = f"epic-{epic_id}-test-plan.md"
+    test_plan_filepath = os.path.join(test_plans_dir, test_plan_filename)
+
+    try:
+        # Write with UTF-8 encoding (cross-platform compatibility)
+        with open(test_plan_filepath, 'w', encoding='utf-8') as f:
+            f.write(test_plan_markdown)
+
+        print(f"   ✅ Test plan written to: {test_plan_filepath}")
+
+        # Store file path in workflow state for later attachment/linking
+        test_plan_files.append({
+            'epic_id': epic_id,
+            'epic_title': epic_title,
+            'file_path': test_plan_filepath,
+            'generated_at': datetime.now().isoformat()
+        })
+
+    except IOError as e:
+        print(f"   ❌ ERROR: Failed to write test plan file {test_plan_filepath}: {e}")
+        print(f"      Check file permissions and disk space.")
+        continue
+    except Exception as e:
+        print(f"   ❌ ERROR: Unexpected error writing test plan for EPIC #{epic_id}: {e}")
+        continue
+
+# Output test plan generation summary
+print(f"\n📊 Test Plan Generation Summary:")
+print(f"   EPICs processed: {len(epic_data)}")
+print(f"   Test plans generated: {len(test_plan_files)}")
+print(f"   Test plans directory: {test_plans_dir}")
+
+# Store test plan file paths in workflow state for attachment/linking in Step 7
+test_plan_state = {
+    'test_plan_files': test_plan_files,
+    'test_plans_directory': test_plans_dir,
+    'generation_timestamp': datetime.now().isoformat()
+}
+
+# Checkpoint: Save test plan data to workflow state
+# (In production, this would be saved via StateManager)
+print(f"\n💾 Test plan file paths stored in workflow state for work item attachment")
+print(f"=" * 80)
+```
+
+---
+
+## Step 1.7: Attach Test Plans to EPIC Work Items
+
+**CRITICAL**: Attach or link test plan files to EPIC work items in the work tracking platform (VISION.md Pillar #2: External Source of Truth).
+
+```python
+# Attach/link test plans to EPICs based on platform
+print(f"\n📎 Attaching test plans to {len(test_plan_files)} EPIC work items...")
+print("=" * 80)
+print(f"Platform: {adapter.platform}")
+print("=" * 80)
+
+attached_count = 0
+failed_attachments = []
+
+for test_plan_entry in test_plan_files:
+    epic_id = test_plan_entry['epic_id']
+    epic_title = test_plan_entry['epic_title']
+    file_path = test_plan_entry['file_path']
+
+    print(f"\n📋 Processing EPIC #{epic_id}: {epic_title}")
+    print(f"   Test plan file: {file_path}")
+
+    try:
+        # Platform-specific attachment/linking
+        if adapter.platform == 'azure-devops':
+            # Azure DevOps: Attach file using attach_file_to_work_item()
+            from pathlib import Path
+
+            print(f"   🔗 Attaching file to Azure DevOps work item...")
+
+            # Import Azure CLI wrapper (canonical source)
+            import sys
+            sys.path.insert(0, ".claude/skills")
+            from azure_devops.cli_wrapper import azure_cli
+
+            # Attach file
+            attach_result = azure_cli.attach_file_to_work_item(
+                work_item_id=int(epic_id.split('-')[-1]) if isinstance(epic_id, str) else epic_id,
+                file_path=Path(file_path),
+                comment=f"EPIC Acceptance Test Plan - Generated {test_plan_entry['generated_at']}"
+            )
+
+            if attach_result.get('success'):
+                print(f"   ✅ File attached successfully")
+
+                # Verify attachment exists
+                filename = Path(file_path).name
+                attachment_exists = azure_cli.verify_attachment_exists(
+                    work_item_id=int(epic_id.split('-')[-1]) if isinstance(epic_id, str) else epic_id,
+                    filename=filename
+                )
+
+                if attachment_exists:
+                    print(f"   ✅ Attachment verified: {filename}")
+                    attached_count += 1
+                else:
+                    print(f"   ❌ ERROR: Attachment verification failed for {filename}")
+                    failed_attachments.append({
+                        'epic_id': epic_id,
+                        'file_path': file_path,
+                        'error': 'Attachment not found after upload'
+                    })
+            else:
+                print(f"   ❌ ERROR: Failed to attach file")
+                failed_attachments.append({
+                    'epic_id': epic_id,
+                    'file_path': file_path,
+                    'error': 'Attachment upload failed'
+                })
+
+        elif adapter.platform == 'file-based':
+            # File-based: Add comment with file path
+            print(f"   📝 Recording test plan path in EPIC metadata...")
+
+            comment_text = f"""Test Plan: {file_path}
+
+EPIC Acceptance Test Plan generated on {test_plan_entry['generated_at']}.
+Test plan file: {file_path}
+"""
+
+            adapter.add_comment(
+                work_item_id=epic_id,
+                comment=comment_text,
+                author="sprint-planning-workflow"
+            )
+
+            print(f"   ✅ Test plan path recorded in EPIC comments")
+
+            # Verify comment was added
+            epic = adapter.get_work_item(epic_id)
+            comments = epic.get('comments', [])
+
+            # Check if our comment is present
+            comment_found = any(file_path in c.get('text', '') for c in comments)
+
+            if comment_found:
+                print(f"   ✅ Comment verified in EPIC #{epic_id}")
+                attached_count += 1
+            else:
+                print(f"   ❌ ERROR: Comment verification failed for EPIC #{epic_id}")
+                failed_attachments.append({
+                    'epic_id': epic_id,
+                    'file_path': file_path,
+                    'error': 'Comment not found after creation'
+                })
+        else:
+            # Unsupported platform
+            print(f"   ⚠️  WARNING: Platform {adapter.platform} not supported for test plan attachment")
+            print(f"   Test plan available at: {file_path}")
+
+    except Exception as e:
+        print(f"   ❌ ERROR: Failed to attach/link test plan for EPIC #{epic_id}: {e}")
+        failed_attachments.append({
+            'epic_id': epic_id,
+            'file_path': file_path,
+            'error': str(e)
+        })
+
+# Output attachment summary
+print(f"\n📊 Test Plan Attachment Summary:")
+print(f"   Total test plans: {len(test_plan_files)}")
+print(f"   Successfully attached/linked: {attached_count}")
+print(f"   Failed: {len(failed_attachments)}")
+
+# CRITICAL: Halt workflow if any attachments failed
+if failed_attachments:
+    print(f"\n❌ TEST PLAN ATTACHMENT VERIFICATION FAILED")
+    print(f"   {len(failed_attachments)} test plan(s) failed to attach/link:")
+    for failure in failed_attachments:
+        print(f"     • EPIC #{failure['epic_id']}: {failure['error']}")
+        print(f"       File: {failure['file_path']}")
+    print(f"\n⚠️  Workflow cannot proceed without verified test plan attachments.")
+    print(f"   Fix attachment issues and re-run sprint planning from Step 1.7.")
+    import sys
+    sys.exit(1)
+else:
+    print(f"\n✅ All {attached_count} test plans attached/linked and verified successfully")
+
+# Store attachment results in workflow state
+attachment_state = {
+    'attached_count': attached_count,
+    'failed_count': len(failed_attachments),
+    'test_plan_files': test_plan_files,
+    'failed_attachments': failed_attachments,
+    'attachment_timestamp': datetime.now().isoformat()
+}
+
+print(f"\n💾 Test plan attachment state stored for workflow verification")
+print(f"=" * 80)
+```
+
+---
+
+## Step 2: Architecture Review
+
+**Call `/architect` with the following task:**
+
+```
+## YOUR TASK: Architecture Review for Sprint
+
+Review the planned Features for architectural readiness.
+
+### Planned Features
+{prioritized_backlog from Step 1}
+
+### Tech Stack
+**Project Type**: web-application
+**Languages**: Python
+**Frameworks**: Streamlit
+**Platforms**: Docker, Azure
+
+### For Each Feature, Assess:
+
+1. **Architecture Readiness**
+   - Ready to implement
+   - Needs design work first
+   - Blocked by technical debt
+
+2. **Technical Risks**
+   - What could go wrong?
+   - Mitigation strategies
+
+3. **Infrastructure Needs**
+   - New services required?
+   - Database changes?
+   - API changes?
+
+4. **Deployment Considerations**
+   - Configuration changes?
+   - Migration scripts needed?
+   - Feature flags?
+
+### Output Format
+
+Return as JSON with architecture decisions, risks, and deployment checklist.
+```
+
+**After the agent completes:**
+- Store architecture analysis
+- Note any blocking technical issues
+
+---
+
+## Step 3: Security Review
+
+**Call `/security-specialist` with the following task:**
+
+```
+## YOUR TASK: Security Review
+
+Review planned Features for security implications.
+
+### Planned Features
+{prioritized_backlog from Step 1}
+
+### Quality Standards
+- Critical Vulnerabilities: Max 0
+- High Vulnerabilities: Max 0
+
+### For Each Feature, Assess:
+
+1. **Security Risks**
+   - Authentication/authorization changes?
+   - Data handling changes?
+   - External integrations?
+
+2. **Compliance Requirements**
+   - Data privacy implications?
+   - Audit logging needed?
+
+3. **Security Testing Needs**
+   - Penetration testing?
+   - Security scanning?
+
+### Output Format
+
+Return as JSON with security risks, compliance items, and testing needs.
+```
+
+---
+
+## Step 4: Estimation and Task Breakdown
+
+This is the most critical step - creating detailed specifications and estimates.
+
+**Call `/senior-engineer` with the following task:**
+
+```
+## YOUR TASK: Estimation and Task Breakdown
+
+Estimate the planned Features and break them into Tasks.
+
+### Features to Estimate
+{prioritized_backlog from Step 1}
+
+### Architecture Analysis
+{architecture review from Step 2}
+
+### Security Analysis
+{security review from Step 3}
+
+### Team Capacity
+{team_capacity} story points
+
+### For Each Feature, Provide:
+
+1. **Story Point Estimate** (1, 2, 3, 5, 8, 13, 21)
+2. **Confidence Level** (High/Medium/Low)
+3. **Task Breakdown**
+   - Each task should be 1-3 points
+   - Include implementation, testing, documentation tasks
+4. **Acceptance Criteria**
+   - 3-5 specific, testable criteria per Feature
+5. **Technical Notes**
+   - Implementation approach
+   - Key decisions made
+
+### Work Item Format
+
+For each work item (Feature or Task), provide:
+```json
+{
+  "type": "Feature|Task",
+  "title": "Clear, specific title",
+  "description": "COMPREHENSIVE description (min 500 chars)",
+  "acceptance_criteria": ["Criterion 1", "Criterion 2"],
+  "story_points": 5,
+  "priority": 2,
+  "tags": ["tag1", "tag2"],
+  "dependencies": ["Other item title"],
+  "technical_notes": "Implementation approach..."
+}
+```
+
+### CRITICAL Requirements
+
+- Description must be MINIMUM 500 characters
+- Include all acceptance criteria
+- Story points must fit within team capacity ({team_capacity})
+
+### Output Format
+
+Return as JSON with work_items array and total_points.
+```
+
+**After the agent completes:**
+- Validate all descriptions are 500+ characters
+- Verify total points <= team capacity
+- Store work items for creation
+
+---
+
+## Step 5: Assemble Sprint Plan
+
+**Call `/scrum-master` with the following task:**
+
+```
+## YOUR TASK: Assemble Sprint Plan
+
+Create the final sprint plan from all agent outputs.
+
+### Inputs
+- Prioritized Backlog: {from Step 1}
+- Architecture Review: {from Step 2}
+- Security Review: {from Step 3}
+- Work Items & Estimates: {from Step 4}
+
+### Team Capacity
+{team_capacity} story points
+
+### Create Sprint Plan Including:
+
+1. **Sprint Goal**
+   - Clear, measurable objective
+
+2. **Selected Work Items**
+   - Features and Tasks for this sprint
+   - Total story points
+
+3. **Risk Summary**
+   - Top 3 technical risks
+   - Top 3 security risks
+   - Mitigation plans
+
+4. **Dependencies**
+   - External dependencies
+   - Internal dependencies (order of work)
+
+5. **Definition of Done**
+   - What must be true for sprint success
+
+### Output Format
+
+Return as JSON with sprint_plan object.
+```
+
+---
+
+## Step 6: Human Approval Gate
+
+**STOP and display the sprint plan for human approval.**
+
+```
+════════════════════════════════════════════════════════════════════════════════
+👤 HUMAN APPROVAL REQUIRED
+════════════════════════════════════════════════════════════════════════════════
+
+Sprint: {sprint_number}
+Team Capacity: {team_capacity} points
+Planned Work: {total_points} points
+Utilization: {percentage}%
+
+📋 FEATURES:
+  1. [FEATURE-001] Feature Title (5 pts)
+  2. [FEATURE-002] Another Feature (8 pts)
+  ...
+
+⚠️ ARCHITECTURE DECISIONS:
+  - Decision 1
+  - Decision 2
+
+🔒 SECURITY ITEMS:
+  - Security consideration 1
+  - Security consideration 2
+
+════════════════════════════════════════════════════════════════════════════════
+Approve sprint plan? [yes/no/modify]:
+```
+
+**Do NOT proceed without user approval.**
+
+---
+
+## Step 6.5: Create and Activate Sprint
+
+After approval, create the sprint iteration and activate it for the team:
+
+```python
+from datetime import datetime, timedelta
+import subprocess
+import requests
+
+print(f"\n📅 Creating Sprint {sprint_number}...")
+print("=" * 80)
+
+# Get sprint dates
+print(f"Sprint dates (leave blank for automatic 2-week sprint starting today):")
+start_date_input = input("Start date (YYYY-MM-DD) or press Enter: ").strip()
+end_date_input = input("End date (YYYY-MM-DD) or press Enter: ").strip()
+
+# Calculate dates
+if start_date_input:
+    start_date = datetime.strptime(start_date_input, '%Y-%m-%d')
+else:
+    start_date = datetime.now()
+
+if end_date_input:
+    end_date = datetime.strptime(end_date_input, '%Y-%m-%d')
+else:
+    end_date = start_date + timedelta(days=14)  # Default 2-week sprint
+
+print(f"\n📋 Sprint {sprint_number} Configuration:")
+print(f"   Start Date: {start_date.strftime('%Y-%m-%d')}")
+print(f"   End Date: {end_date.strftime('%Y-%m-%d')}")
+print(f"   Duration: {(end_date - start_date).days} days")
+
+# Step 1: Create sprint iteration
+print(f"\n🔧 Step 1: Creating sprint iteration...")
+
+try:
+    # NOTE: Using Azure CLI for now - Feature 1129 will replace with PAT token REST API
+    sprint_path = f"\\https://dev.azure.com/keychainio/AI%20Council\\Iteration"
+
+    cmd = [
+        'az', 'boards', 'iteration', 'project', 'create',
+        '--name', f'Sprint {sprint_number}',
+        '--path', sprint_path,
+        '--start-date', start_date.strftime('%Y-%m-%dT00:00:00Z'),
+        '--finish-date', end_date.strftime('%Y-%m-%dT00:00:00Z'),
+        '--project', 'https://dev.azure.com/keychainio/AI%20Council',
+        '--output', 'json'
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    sprint_data = __import__('json').loads(result.stdout)
+
+    sprint_id = sprint_data.get('id')
+    sprint_identifier = sprint_data.get('identifier')
+
+    print(f"✅ Sprint iteration created successfully")
+    print(f"   Sprint ID: {sprint_id}")
+    print(f"   Sprint Path: {sprint_data.get('path', 'N/A')}")
+
+except subprocess.CalledProcessError as e:
+    print(f"❌ ERROR: Failed to create sprint iteration")
+    print(f"   Command: {' '.join(cmd)}")
+    print(f"   Error: {e.stderr}")
+
+    # Check if sprint already exists
+    if "already exists" in e.stderr or "duplicate" in e.stderr.lower():
+        print(f"\n⚠️  Sprint {sprint_number} may already exist. Continuing with activation...")
+
+        # Try to get existing sprint
+        list_cmd = ['az', 'boards', 'iteration', 'project', 'list', '--project', 'https://dev.azure.com/keychainio/AI%20Council', '--output', 'json']
+        list_result = subprocess.run(list_cmd, capture_output=True, text=True)
+
+        if list_result.returncode == 0:
+            sprints = __import__('json').loads(list_result.stdout)
+
+            # Find Sprint in the children array
+            if isinstance(sprints, dict) and 'children' in sprints:
+                existing_sprint = next(
+                    (s for s in sprints.get('children', []) if s.get('name') == f'Sprint {sprint_number}'),
+                    None
+                )
+
+                if existing_sprint:
+                    sprint_id = existing_sprint.get('id')
+                    sprint_identifier = existing_sprint.get('identifier')
+                    print(f"✅ Found existing sprint: ID {sprint_id}")
+                else:
+                    print(f"❌ ERROR: Could not find Sprint {sprint_number} in existing sprints")
+                    import sys
+                    sys.exit(1)
+    else:
+        print(f"\n⚠️  Sprint creation failed. Check Azure DevOps permissions and project configuration.")
+        import sys
+        sys.exit(1)
+
+# Step 2: Activate sprint for team
+print(f"\n🔧 Step 2: Activating sprint for team...")
+
+try:
+    # Get access token for REST API
+    # NOTE: Using Azure CLI for now - Feature 1129 will replace with PAT token
+    token_cmd = ['az', 'account', 'get-access-token', '--resource', '499b84ac-1321-427f-aa17-267ca6975798', '--query', 'accessToken', '-o', 'tsv']
+    token_result = subprocess.run(token_cmd, capture_output=True, text=True, check=True)
+    access_token = token_result.stdout.strip()
+
+    # Add sprint to team iterations using REST API
+    org_url = "https://dev.azure.com/keychainio"
+    project = "https://dev.azure.com/keychainio/AI%20Council"
+    team = "https://dev.azure.com/keychainio/AI%20Council Team"
+
+    url = f"{org_url}/{project}/{team}/_apis/work/teamsettings/iterations?api-version=7.1"
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {access_token}'
+    }
+
+    data = {
+        "id": sprint_identifier
+    }
+
+    response = requests.post(url, headers=headers, json=data)
+
+    if response.status_code in [200, 201]:
+        print(f"✅ Sprint {sprint_number} activated for team")
+
+        result = response.json()
+        time_frame = result.get('attributes', {}).get('timeFrame', 'N/A')
+        print(f"   Time Frame: {time_frame}")
+
+    elif response.status_code == 400 and "already exists" in response.text.lower():
+        print(f"✅ Sprint {sprint_number} already activated for team")
+    else:
+        print(f"❌ ERROR: Failed to activate sprint for team")
+        print(f"   Status: {response.status_code}")
+        print(f"   Error: {response.text}")
+        import sys
+        sys.exit(1)
+
+except Exception as e:
+    print(f"❌ ERROR: Failed to activate sprint: {e}")
+    import sys
+    sys.exit(1)
+
+# Step 3: Verify sprint is active
+print(f"\n🔍 Step 3: Verifying sprint activation...")
+
+try:
+    # Query team iterations to verify Sprint is active
+    verify_url = f"{org_url}/{project}/{team}/_apis/work/teamsettings/iterations?api-version=7.1"
+
+    response = requests.get(verify_url, headers=headers)
+
+    if response.status_code == 200:
+        data = response.json()
+        iterations = data.get('value', [])
+
+        # Check if our sprint is in the active iterations
+        sprint_active = any(
+            i.get('name') == f'Sprint {sprint_number}'
+            for i in iterations
+        )
+
+        if sprint_active:
+            print(f"✅ Sprint {sprint_number} verified as active for team")
+
+            # Get sprint details
+            sprint_info = next(
+                (i for i in iterations if i.get('name') == f'Sprint {sprint_number}'),
+                None
+            )
+
+            if sprint_info:
+                attributes = sprint_info.get('attributes', {})
+                time_frame = attributes.get('timeFrame', 'N/A')
+                start = attributes.get('startDate', 'N/A')
+                finish = attributes.get('finishDate', 'N/A')
+
+                print(f"   Status: {time_frame}")
+                print(f"   Start: {start[:10] if start != 'N/A' else 'N/A'}")
+                print(f"   Finish: {finish[:10] if finish != 'N/A' else 'N/A'}")
+
+            print(f"\n📍 Sprint board available at:")
+            print(f"   {org_url}/https://dev.azure.com/keychainio/AI%20Council/_sprints/directory")
+        else:
+            print(f"❌ ERROR: Sprint {sprint_number} not found in team iterations")
+            print(f"   Sprint may not be properly activated")
+            import sys
+            sys.exit(1)
+    else:
+        print(f"⚠️  WARNING: Could not verify sprint activation (status {response.status_code})")
+        print(f"   Continuing with work item creation...")
+
+except Exception as e:
+    print(f"⚠️  WARNING: Sprint verification failed: {e}")
+    print(f"   Continuing with work item creation...")
+
+print(f"\n{'='*80}")
+print(f"✅ Sprint {sprint_number} created and activated successfully")
+print(f"{'='*80}\n")
+```
+
+---
+
+## Step 7: Work Item Creation
+
+After sprint creation and activation, create work items via adapter:
+
+```python
+created_items = []
+
+for item in approved_work_items:
+    # Prepare description with acceptance criteria
+    description = f"""{item['description']}
+
+## Acceptance Criteria
+{chr(10).join('- [ ] ' + criteria for criteria in item['acceptance_criteria'])}
+
+## Sprint Planning Notes
+- Planned for Sprint {sprint_number}
+- Story Points: {item['story_points']}
+- Priority: {item['priority']}
+"""
+
+    try:
+        # Create work item via adapter
+        result = adapter.create_work_item(
+            work_item_type=item['type'],
+            title=item['title'],
+            description=description,
+            fields={
+                'System.IterationPath': f'https://dev.azure.com/keychainio/AI%20Council\\{sprint_number}',
+                'System.Tags': '; '.join(item.get('tags', [])),
+                'Microsoft.VSTS.Common.Priority': item.get('priority', 2)
+            }
+        )
+
+        created_items.append(result['id'])
+        print(f"✅ Created {item['type']} #{result['id']}: {item['title']}")
+
+        # Create specification file for Features
+        if item['type'] == 'Feature':
+            spec_file = f"docs/specifications/sprint-{sprint_number}/{result['id']}-{item['title'].lower().replace(' ', '-')}.md"
+            # TODO: Generate spec file content
+
+    except Exception as e:
+        print(f"❌ Failed to create {item['type']} '{item['title']}': {e}")
+        continue
+
+print(f"✅ Created {len(created_items)} work items")
+print(f"   Work Item IDs: {', '.join(map(str, created_items))}")
+```
+
+---
+
+## Step 7.5: Verify Work Item Creation
+
+Verify all created work items actually exist in work tracking system (External Source of Truth pattern from VISION.md Pillar #2):
+
+```python
+# CRITICAL: Verify created work items exist (VISION.md External Source of Truth)
+print(f"\n🔍 Verifying {len(created_items)} created work items exist in {adapter.platform}...")
+print("=" * 80)
+print("CRITICAL: Implementing External Source of Truth verification (VISION.md Pillar #2)")
+print("=" * 80)
+
+verified_items = []
+missing_items = []
+
+for item_id in created_items:
+    try:
+        # Query adapter for external source of truth
+        work_item = adapter.get_work_item(item_id)
+
+        if work_item and work_item.get('id') == item_id:
+            verified_items.append(item_id)
+            print(f"✅ Verified: Work Item #{item_id} exists")
+        else:
+            missing_items.append(item_id)
+            print(f"❌ ERROR: Work Item #{item_id} claimed created but doesn't exist in {adapter.platform}")
+
+    except Exception as e:
+        missing_items.append(item_id)
+        print(f"❌ ERROR: Work Item #{item_id} verification failed: {e}")
+
+# Output verification summary
+print(f"\n📊 Verification Summary:")
+print(f"   Created (claimed): {len(created_items)}")
+print(f"   Verified (confirmed): {len(verified_items)}")
+print(f"   Missing: {len(missing_items)}")
+
+if missing_items:
+    print(f"\n❌ VERIFICATION FAILED")
+    print(f"   {len(missing_items)} work item(s) claimed created but don't exist:")
+    for item_id in missing_items:
+        print(f"     • Work Item #{item_id}")
+    print(f"\n⚠️  This indicates work item creation failed silently.")
+    print(f"   Check adapter logs and retry work item creation.")
+    import sys
+    sys.exit(1)
+else:
+    print(f"\n✅ All {len(created_items)} work items verified successfully")
+```
+
+---
+
+## Step 7.6: Validate Work Item Content Quality
+
+Validate work items have sufficient detail for implementation:
+
+```python
+# Validate work item content quality (description and acceptance criteria)
+print(f"\n🔍 Validating content quality for {len(verified_items)} work items...")
+
+quality_issues = []
+
+for item_id in verified_items:
+    try:
+        # Query full work item details (reuse from Step 7.5)
+        work_item = adapter.get_work_item(item_id)
+
+        if not work_item:
+            continue  # Already failed in Step 7.5
+
+        fields = work_item.get('fields', {})
+        title = fields.get('System.Title', f'Work Item #{item_id}')
+
+        # Validate description length (>= 500 characters)
+        description = fields.get('System.Description', '')
+        # Strip HTML tags for character count
+        import re
+        description_text = re.sub('<[^<]+?>', '', description)
+        description_length = len(description_text.strip())
+
+        # Validate acceptance criteria (>= 3 criteria)
+        acceptance_criteria = fields.get('Microsoft.VSTS.Common.AcceptanceCriteria', '')
+        # Count criteria (lines starting with "- [ ]" or numbered)
+        criteria_lines = [
+            line for line in acceptance_criteria.split('\n')
+            if line.strip().startswith('- [ ]') or
+               line.strip().startswith('- [x]') or
+               re.match(r'^\d+\.', line.strip())
+        ]
+        criteria_count = len(criteria_lines)
+
+        # Check quality thresholds
+        issues = []
+        if description_length < 500:
+            issues.append(f"description too short ({description_length} chars, need 500+)")
+        if criteria_count < 3:
+            issues.append(f"insufficient acceptance criteria ({criteria_count} criteria, need 3+)")
+
+        if issues:
+            quality_issues.append({
+                'id': item_id,
+                'title': title,
+                'issues': issues
+            })
+            print(f"❌ Work Item #{item_id}: {', '.join(issues)}")
+        else:
+            print(f"✅ Work Item #{item_id}: Sufficient detail (desc: {description_length} chars, AC: {criteria_count} criteria)")
+
+    except Exception as e:
+        quality_issues.append({
+            'id': item_id,
+            'title': f'Work Item #{item_id}',
+            'issues': [f"validation error: {e}"]
+        })
+        print(f"❌ Work Item #{item_id}: Validation error: {e}")
+
+# Output quality validation summary
+print(f"\n📊 Content Quality Summary:")
+print(f"   Validated: {len(verified_items)}")
+print(f"   Sufficient Quality: {len(verified_items) - len(quality_issues)}")
+print(f"   Quality Issues: {len(quality_issues)}")
+
+if quality_issues:
+    print(f"\n❌ CONTENT QUALITY VALIDATION FAILED")
+    print(f"   {len(quality_issues)} work item(s) have insufficient detail:")
+    for issue in quality_issues:
+        print(f"     • #{issue['id']} - {issue['title']}")
+        for problem in issue['issues']:
+            print(f"       - {problem}")
+    print(f"\n⚠️  Work items must have:")
+    print(f"   • Description: >= 500 characters (excluding HTML tags)")
+    print(f"   • Acceptance Criteria: >= 3 criteria")
+    print(f"\n   Update work items in {adapter.platform} and re-run sprint planning.")
+    import sys
+    sys.exit(1)
+else:
+    print(f"\n✅ All {len(verified_items)} work items have sufficient detail")
+```
+
+---
+
+## Step 7.7: Verification Checklist
+
+Display verification results:
+
+```python
+# Output sprint planning verification checklist
+print(f"\n{'='*80}")
+print(f"📋 Sprint Planning Verification Checklist")
+print(f"{'='*80}\n")
+
+# Count Features and Tasks from approved_work_items
+# Track work item types during creation
+feature_count = sum(1 for item in approved_work_items if item['type'] == 'Feature')
+task_count = sum(1 for item in approved_work_items if item['type'] == 'Task')
+
+# Item 1: Features created
+print(f"- [x] Features created: {feature_count}")
+
+# Item 2: Tasks created
+print(f"- [x] Tasks created: {task_count}")
+
+# Item 3: All items exist in platform (from Step 7.5)
+if len(verified_items) == len(created_items):
+    print(f"- [x] All {len(created_items)} work items exist in {adapter.platform}")
+else:
+    print(f"- [ ] All work items exist in {adapter.platform} (WARNING: {len(created_items) - len(verified_items)} missing)")
+
+# Item 4: Descriptions validated (from Step 7.6)
+if len(quality_issues) == 0:
+    print(f"- [x] All descriptions validated (>= 500 characters)")
+else:
+    print(f"- [ ] All descriptions validated (WARNING: {len(quality_issues)} items have quality issues)")
+
+# Item 5: Sprint assignments verified
+# Check that all items have correct iteration path
+sprint_assignment_issues = 0
+for item_id in verified_items:
+    try:
+        work_item = adapter.get_work_item(item_id)
+        iteration_path = work_item.get('fields', {}).get('System.IterationPath', '')
+        expected_path = f'https://dev.azure.com/keychainio/AI%20Council\\{sprint_number}'
+        if iteration_path != expected_path:
+            sprint_assignment_issues += 1
+    except:
+        sprint_assignment_issues += 1
+
+if sprint_assignment_issues == 0:
+    print(f"- [x] Sprint assignments verified (all items in Sprint {sprint_number})")
+else:
+    print(f"- [ ] Sprint assignments verified (WARNING: {sprint_assignment_issues} items not in correct sprint)")
+
+# Item 6: Story points within capacity
+print(f"- [ ] Story points within capacity (N/A - story points not configured)")
+
+print(f"\n{'='*80}")
+print(f"✅ Sprint planning verification complete")
+print(f"{'='*80}\n")
+```
+
+---
+
+## Step 8: Completion Summary
+
+```
+════════════════════════════════════════════════════════════════════════════════
+✅ SPRINT PLANNING COMPLETE
+════════════════════════════════════════════════════════════════════════════════
+
+Sprint {sprint_number} is ready!
+
+📊 Summary:
+  - Features: {feature_count}
+  - Tasks: {task_count}
+  - Total Points: {total_points}
+  - Capacity: {team_capacity}
+  - Utilization: {percentage}%
+
+📁 Files Created:
+  - Work items in .claude/work-items/
+  - Specifications in docs/specifications/sprint-{sprint_number}/
+
+➡️ Next Steps:
+  1. Run /sprint-execution to implement tasks and monitor progress
+  2. Run /sprint-review to demo completed work to stakeholders
+  3. Run /sprint-retrospective to analyze what went well/poorly
+  4. Run /sprint-completion to finalize and close the sprint
+
+════════════════════════════════════════════════════════════════════════════════
+```
+
+---
+
+## Agent Commands Used
+
+| Step | Agent Command | Purpose |
+|------|---------------|---------|
+| 1 | `/business-analyst` | Prioritize backlog |
+| 1.5 | N/A (Direct adapter query) | Extract EPICs from sprint scope |
+| 1.6 | `/qa-tester` | Generate acceptance test plans for EPICs |
+| 1.7 | N/A (Direct adapter operation) | Attach test plans to EPIC work items |
+| 2 | `/architect` | Architecture review |
+| 3 | `/security-specialist` | Security review |
+| 4 | `/senior-engineer` | Estimation & breakdown |
+| 5 | `/scrum-master` | Sprint plan assembly |
+
+**Key**: Each agent command spawns a **fresh context window** via the Task tool.
+
+---
+
+## Configuration
+
+**Work Tracking Platform:** azure-devops
+
+**Work Item Types:**
+- Epic: Epic
+- Feature: Feature
+- Task: Task
+
+**Quality Standards:**
+- Test Coverage: >= 80%
+- Code Complexity: <= 10
+
+---
+
+*Generated by Trustable AI Workbench for ai-council*

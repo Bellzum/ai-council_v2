@@ -1,0 +1,160 @@
+context_files:
+- keywords:
+  - claude
+  - path
+  - readme
+  - context
+  - keywords
+  - project
+  - overview
+  - framework
+  - task_types
+  - any
+  - priority
+  - high
+  - max_tokens
+  - children
+  - runtime
+  - workflow
+  - council
+  - module
+  - feature
+  - dependencies
+  path: CLAUDE.md
+  size: 355
+  type: claude_md
+- keywords:
+  - claude
+  - workflow
+  - readme
+  - context
+  - keywords
+  - runtime
+  - agent
+  - task_types
+  - agent-development
+  - priority
+  - medium
+  - max_tokens
+  - children
+  - dependencies
+  - purpose
+  - see
+  - full
+  - documentation
+  path: .claude/CLAUDE.md
+  size: 263
+  type: claude_md
+- keywords:
+  - council
+  - readme
+  - context
+  - keywords
+  - module
+  - feature
+  - task_types
+  - implementation
+  - priority
+  - medium
+  - max_tokens
+  - children
+  - dependencies
+  - purpose
+  - see
+  - full
+  - documentation
+  path: council/CLAUDE.md
+  size: 233
+  type: claude_md
+generated_at: '2026-01-10T12:35:42.526512'
+keywords:
+  agent:
+  - .claude/CLAUDE.md
+  agent-development:
+  - .claude/CLAUDE.md
+  ai-council:
+  - CLAUDE.md
+  any:
+  - CLAUDE.md
+  children:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  claude:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  context:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  council:
+  - CLAUDE.md
+  - council/CLAUDE.md
+  dependencies:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  documentation:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  feature:
+  - CLAUDE.md
+  - council/CLAUDE.md
+  framework:
+  - CLAUDE.md
+  full:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  high:
+  - CLAUDE.md
+  implementation:
+  - council/CLAUDE.md
+  keywords:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  max_tokens:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  medium:
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  module:
+  - CLAUDE.md
+  - council/CLAUDE.md
+  overview:
+  - CLAUDE.md
+  path:
+  - CLAUDE.md
+  priority:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  project:
+  - CLAUDE.md
+  purpose:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  readme:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  runtime:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  see:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  task_types:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+  - council/CLAUDE.md
+  workflow:
+  - CLAUDE.md
+  - .claude/CLAUDE.md
+root: /mnt/c/Users/sundance/workspace/keychain/products/ai-council

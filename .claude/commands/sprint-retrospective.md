@@ -1,0 +1,272 @@
+# Sprint Retrospective Workflow
+
+**Project**: ai-council
+**Workflow**: Sprint Retrospective
+**Purpose**: Reflect on sprint execution and identify improvements
+
+## Output Formatting Requirements
+
+**IMPORTANT**: Use actual Unicode emojis in reports, NOT GitHub-style shortcodes:
+- ✅ Went well | ⚠️ Needs improvement | ❌ Problem
+- 🎯 Goal met | 📉 Missed target | 📈 Exceeded
+- 👍 Keep doing | 🔄 Change | 🛑 Stop doing
+
+## Overview
+
+This workflow facilitates sprint retrospectives by analyzing sprint metrics, gathering team feedback, and creating actionable improvement items.
+
+## Prerequisites
+
+- Completed sprint in azure-devops
+- Sprint metrics and burndown data
+- Team availability for feedback
+
+## Initialize Work Tracking
+
+```python
+# Initialize work tracking adapter (auto-selects Azure DevOps or file-based)
+import sys
+sys.path.insert(0, ".claude/skills")
+from work_tracking import get_adapter
+
+adapter = get_adapter()
+print(f"📋 Work Tracking: {adapter.platform}")
+
+# Set sprint name for retrospective
+sprint_name = "Sprint X"  # Replace with actual sprint
+```
+
+## Workflow Steps
+
+### Step 1: Collect Sprint Metrics
+
+1. **Query sprint work items:**
+   ```python
+   # Get all work items from the sprint
+   sprint_items = adapter.query_sprint_work_items(sprint_name)
+   summary = adapter.get_sprint_summary(sprint_name)
+
+   print(f"📊 Sprint {sprint_name} Summary:")
+   print(f"  Total items: {summary['total_items']}")
+   print(f"  Total points: {summary['total_points']}")
+   print(f"  Completed points: {summary['completed_points']}")
+   print(f"  Completion rate: {(summary['completed_points']/max(summary['total_points'],1))*100:.1f}%")
+   print(f"\n  By state: {summary['by_state']}")
+   print(f"  By type: {summary['by_type']}")
+
+   # List completed items
+   completed_states = ['Done', 'Closed', 'Resolved', 'Completed']
+   completed = [i for i in sprint_items if i.get('state') in completed_states]
+   incomplete = [i for i in sprint_items if i.get('state') not in completed_states]
+
+   print(f"\n✅ Completed ({len(completed)}):")
+   for item in completed:
+       print(f"  WI-{item['id']}: {item['title']}")
+
+   print(f"\n⏳ Not Completed ({len(incomplete)}):")
+   for item in incomplete:
+       print(f"  WI-{item['id']}: {item['title']} [{item['state']}]")
+   ```
+
+2. **Calculate metrics:**
+   - Planned vs. completed story points
+   - Velocity
+   - Number of items completed vs. carried over
+   - Bug resolution rate
+   - Cycle time
+   - Code quality metrics (test coverage: 80%)
+
+3. **Gather quality data:**
+   - Test coverage from CI/CD
+   - Security scan results (critical vulnerabilities: 0)
+   - Code review feedback
+   - Production incidents
+
+### Step 2: Scrum Master - Sprint Analysis
+
+1. **Read agent definition:** `.claude/agents/scrum-master.md`
+2. **Task:** "Analyze the sprint execution and identify patterns:
+   - Review velocity trends
+   - Identify bottlenecks and blockers
+   - Analyze work item flow
+   - Evaluate quality metrics against standards
+   - Identify process improvements
+   - Highlight what went well
+   - Document what needs improvement"
+3. **Spawn agent** using Task tool with model `claude-sonnet-4-5`
+4. **Input:** Sprint metrics from Step 1
+5. **Display output** to user
+6. **Collect:**
+   - What went well
+   - What needs improvement
+   - Action items
+   - Process recommendations
+
+### Step 3: Senior Engineer - Technical Retrospective
+
+1. **Read agent definition:** `.claude/agents/senior-engineer.md`
+2. **Task:** "Review sprint from technical perspective:
+   - Analyze technical debt accrued
+   - Review code quality trends
+   - Assess testing effectiveness (target: 80%)
+   - Identify technical improvements needed
+   - Review development tooling and practices
+   - Recommend technical process improvements"
+3. **Spawn agent** using Task tool with model `claude-opus-4-5`
+4. **Input:** Sprint metrics and quality data
+5. **Display output** to user
+6. **Collect:**
+   - Technical improvements
+   - Tooling recommendations
+   - Quality enhancement suggestions
+   - Technical debt items to address
+
+### Step 4: Security Specialist - Security Review
+
+1. **Read agent definition:** `.claude/agents/security-specialist.md`
+2. **Task:** "Review sprint security aspects:
+   - Review security scan results
+   - Assess vulnerability resolution (critical: 0, high: 0)
+   - Evaluate security practices followed
+   - Identify security improvements
+   - Review security incidents or near-misses"
+3. **Spawn agent** using Task tool with model `claude-opus-4-5`
+4. **Input:** Security metrics from sprint
+5. **Display output** to user
+6. **Collect:**
+   - Security improvements
+   - Training needs
+   - Tool recommendations
+
+### Step 5: Team Feedback Collection
+
+**Instructions for User:**
+1. Share the analysis with the team
+2. Conduct retrospective meeting using format:
+   - What went well? (Continue doing)
+   - What didn't go well? (Stop doing)
+   - What should we try? (Start doing)
+3. Gather team input and feedback
+4. Prioritize action items with the team
+5. Document key decisions
+
+**Template for team feedback:**
+```
+## Sprint [NUMBER] Retrospective - Team Feedback
+
+### What Went Well (Continue)
+- [Team input here]
+
+### What Needs Improvement (Stop)
+- [Team input here]
+
+### What To Try (Start)
+- [Team input here]
+
+### Action Items (Prioritized)
+1. [Action item with owner]
+2. [Action item with owner]
+...
+```
+
+### Step 6: Create Improvement Work Items
+
+1. **For each agreed action item:**
+   - Create Task in azure-devops
+   - Assign to owner
+   - Add to next sprint if high priority
+   - Tag with "process-improvement"
+
+2. **Create work items:**
+   ```python
+   next_sprint = "Sprint {number}".format(number=next_sprint_number)
+
+   for action_item in prioritized_actions:
+       result = adapter.create_work_item_idempotent(
+           title=f"Process Improvement: {action_item['title']}",
+           work_item_type="Task",
+           description=action_item['description'],
+           fields={
+               'System.AssignedTo': action_item.get('owner'),
+               'System.Tags': 'process-improvement; retrospective',
+           },
+           sprint_name=next_sprint
+       )
+
+       if result.get('created'):
+           print(f"  ✅ Created WI-{result['id']}: {action_item['title']}")
+           state.record_work_item_created(result['id'], {
+               'type': 'improvement',
+               'source': 'retrospective'
+           })
+       else:
+           print(f"  ℹ️ Already exists WI-{result['id']}: {action_item['title']}")
+   ```
+
+### Step 7: Generate Retrospective Report
+
+Create comprehensive report including:
+
+**Sprint Metrics:**
+- Velocity: [X] points
+- Completion rate: [Y]%
+- Carried over: [Z] items
+- Quality: Test coverage [80%], Vulnerabilities [count]
+
+**What Went Well:**
+- [List from analysis and team feedback]
+
+**What Needs Improvement:**
+- [List from analysis and team feedback]
+
+**Action Items Created:**
+- [List with WI-IDs and owners]
+
+**Recommendations:**
+- [Process improvements]
+- [Tool improvements]
+- [Team development]
+
+**Next Steps:**
+- [Clear action items for next sprint]
+
+### Step 8: Archive and Share
+
+1. Save retrospective report to `.claude/retrospectives/sprint-[NUMBER]-retro.md`
+2. Share with team and stakeholders
+3. Update team wiki/documentation
+4. Schedule follow-up on action items
+
+## Success Criteria
+
+- ✅ Sprint metrics analyzed and documented
+- ✅ Team feedback collected and incorporated
+- ✅ Action items created with owners assigned
+- ✅ Improvements scheduled for next sprint
+- ✅ Retrospective report shared with stakeholders
+- ✅ Continuous improvement culture reinforced
+
+## Post-Workflow
+
+1. Review action items in next sprint planning
+2. Track completion of improvement items
+3. Measure impact of implemented changes
+4. Update retrospective process based on feedback
+
+## Configuration
+
+**Agents Used:**
+- Scrum Master- Senior Engineer- Security Specialist
+**Quality Standards:**
+- Test Coverage Minimum: 80%
+- Critical Vulnerabilities: 0
+- High Vulnerabilities: 0
+- Code Complexity: ≤ 10
+
+**Work Item Types:**
+- Task: Task
+- Bug: Bug
+
+---
+
+*Generated by Trustable AI Workbench for ai-council*

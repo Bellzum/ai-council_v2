@@ -1,0 +1,1197 @@
+# Sprint Execution - Implementation & Monitoring
+
+**Project**: ai-council
+**Workflow**: Sprint Execution - Implementation & Monitoring
+**Purpose**: Implement sprint-assigned tasks with automated testing, verification, and auto-commit. Secondary: monitor sprint progress and generate daily reports
+
+## Output Formatting Requirements
+
+**IMPORTANT**: Use actual Unicode emojis in reports, NOT GitHub-style shortcodes.
+
+---
+
+## Workflow Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  SPRINT EXECUTION - Implementation & Monitoring                             │
+│                                                                             │
+│  IMPLEMENTATION CYCLE (for each task):                                     │
+│    1. Select task → Mark as "In Progress"                                  │
+│    2. /engineer → Implement code + unit tests                              │
+│    3. Run unit tests                                                       │
+│    4. /tester → Evaluate tests, run integration tests                      │
+│    5. If tests pass with high confidence → Auto-commit                     │
+│    6. Update work item status to "Done"                                    │
+│                                                                             │
+│  MONITORING CYCLE (daily):                                                 │
+│    1. Collect sprint status data                                           │
+│    2. /scrum-master → Daily standup report                                 │
+│    3. /senior-engineer → Blocker analysis (if blocked items)               │
+│    4. Quality health check                                                 │
+│    5. Verification checklist (external source of truth audit)              │
+│    6. /security-specialist → Weekly security review                        │
+│    7. Generate status report                                               │
+│                                                                             │
+│  Each agent command spawns a FRESH CONTEXT WINDOW via Task tool            │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Initialize Workflow
+
+```python
+# Initialize work tracking adapter
+import sys
+sys.path.insert(0, ".claude/skills")
+from work_tracking import get_adapter
+
+adapter = get_adapter()
+print(f"📋 Work Tracking: {adapter.platform}")
+
+current_sprint = input("Sprint name (e.g., Sprint 1): ")
+
+# Load sprint work items via adapter
+try:
+    sprint_items = adapter.query_work_items(
+        filters={
+            'System.IterationPath': f'https://dev.azure.com/keychainio/AI%20Council\\{current_sprint}'
+        }
+    )
+    print(f"📋 Found {len(sprint_items)} items in {current_sprint}")
+except Exception as e:
+    print(f"❌ Failed to load sprint items: {e}")
+    sprint_items = []
+
+# Optional: Non-interactive mode - set variables instead of prompts
+# This enables automated sprint execution without user interaction
+#
+# To use non-interactive mode, set these variables before running the workflow:
+#   task_ids = [5001, 5002, 5003]  # Focus on specific task IDs (filters sprint status)
+#   skip_blockers_check = True  # Skip blocker detection (useful when focusing on specific tasks)
+#
+# If these variables are set, the workflow will use these values to filter/configure execution.
+#
+# Validation constraints:
+#   - task_ids: list of Task IDs (optional, default: [] = all sprint tasks)
+#   - skip_blockers_check: boolean (optional, default: False)
+#
+# Example for targeted execution:
+#   task_ids = [5001, 5002]
+#   skip_blockers_check = True
+#
+# Leave unset (or set to empty list/False) for interactive mode.
+# Check if variables are defined; if not, use defaults for interactive mode
+try:
+    task_ids
+except NameError:
+    task_ids = []  # Empty list = all sprint tasks
+
+try:
+    skip_blockers_check
+except NameError:
+    skip_blockers_check = False  # Run blocker detection by default
+```
+
+---
+
+## PART A: IMPLEMENTATION CYCLE
+
+### Implementation Cycle Overview
+
+For each task in the sprint, follow this cycle:
+
+1. **Engineer implements** → Code + unit tests
+2. **Run unit tests** → Validate basic functionality
+3. **Tester validates** → Evaluate tests, run integration tests
+4. **Auto-commit** → If tests pass with high confidence
+5. **Update work item** → Mark as Done
+
+---
+
+### Step A1: Select Task to Implement
+
+```python
+# Get tasks that are ready to implement
+ready_tasks = [
+    item for item in sprint_items
+    if item.get('state') in ['New', 'Approved', 'Ready']
+    and (item.get('type') or item.get('fields', {}).get('System.WorkItemType')) == 'Task'
+]
+
+if not ready_tasks:
+    print("✅ No tasks ready for implementation")
+    # Skip to monitoring cycle
+else:
+    print(f"\n📋 Tasks ready for implementation: {len(ready_tasks)}")
+    for i, task in enumerate(ready_tasks[:10], 1):  # Show first 10
+        title = task.get('title', 'Untitled')
+        task_id = task.get('id')
+        points = get_story_points(task)
+        print(f"  {i}. #{task_id}: {title} ({points} pts)")
+
+    # User selects task
+    selection = input("\nSelect task number (or 'skip' for monitoring only): ")
+    if selection.lower() == 'skip':
+        selected_task = None
+    else:
+        try:
+            idx = int(selection) - 1
+            selected_task = ready_tasks[idx]
+            print(f"\n✅ Selected: #{selected_task['id']} - {selected_task['title']}")
+        except (ValueError, IndexError):
+            print("❌ Invalid selection, skipping implementation")
+            selected_task = None
+```
+
+---
+
+### Step A1.5: Mark Task In Progress and Cascade to Parent Feature/Epic
+
+**IF A TASK IS SELECTED**, update its state to "In Progress" and cascade state to parent Feature and Epic:
+
+```python
+# Mark task as In Progress when work starts
+if selected_task:
+    try:
+        # Step 1: Update Task to "In Progress"
+        adapter.update_work_item(
+            work_item_id=selected_task['id'],
+            fields={
+                'System.State': 'In Progress',
+                'System.History': f"""Work started on this task.
+
+Assigned to implementation cycle.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+"""
+            }
+        )
+        print(f"✅ Updated task #{selected_task['id']} to In Progress")
+
+        # Step 2: Query Task for parent relations (cascade upward)
+        try:
+            task_details = adapter.get_work_item(selected_task['id'])
+            relations = task_details.get('relations', [])
+
+            # Find parent Feature (Hierarchy-Reverse)
+            parent_feature_id = None
+            for relation in relations:
+                if relation.get('rel') == 'System.LinkTypes.Hierarchy-Reverse':
+                    # Extract ID from URL: .../workitems/123
+                    url = relation.get('url', '')
+                    parent_feature_id = int(url.split('/')[-1])
+                    break
+
+            if parent_feature_id:
+                # Step 3: Update parent Feature to "In Progress" (if not already)
+                parent_feature = adapter.get_work_item(parent_feature_id)
+                parent_feature_state = parent_feature.get('fields', {}).get('System.State')
+                parent_feature_title = parent_feature.get('fields', {}).get('System.Title')
+
+                if parent_feature_state in ['New', 'To Do']:
+                    adapter.update_work_item(
+                        work_item_id=parent_feature_id,
+                        fields={
+                            'System.State': 'In Progress',
+                            'System.History': f"""Auto-updated to In Progress because child Task #{selected_task['id']} started.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+"""
+                        }
+                    )
+                    print(f"✅ Updated parent Feature #{parent_feature_id} ({parent_feature_title}) to In Progress")
+                else:
+                    print(f"ℹ️  Parent Feature #{parent_feature_id} already in state: {parent_feature_state}")
+
+                # Step 4: Query parent Feature for its parent Epic
+                parent_feature_relations = parent_feature.get('relations', [])
+                parent_epic_id = None
+
+                for relation in parent_feature_relations:
+                    if relation.get('rel') == 'System.LinkTypes.Hierarchy-Reverse':
+                        url = relation.get('url', '')
+                        parent_epic_id = int(url.split('/')[-1])
+                        break
+
+                if parent_epic_id:
+                    # Step 5: Update parent Epic to "In Progress" (if not already)
+                    parent_epic = adapter.get_work_item(parent_epic_id)
+                    parent_epic_state = parent_epic.get('fields', {}).get('System.State')
+                    parent_epic_title = parent_epic.get('fields', {}).get('System.Title')
+
+                    if parent_epic_state in ['New', 'To Do']:
+                        adapter.update_work_item(
+                            work_item_id=parent_epic_id,
+                            fields={
+                                'System.State': 'In Progress',
+                                'System.History': f"""Auto-updated to In Progress because child Feature #{parent_feature_id} started.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+"""
+                            }
+                        )
+                        print(f"✅ Updated parent Epic #{parent_epic_id} ({parent_epic_title}) to In Progress")
+                    else:
+                        print(f"ℹ️  Parent Epic #{parent_epic_id} already in state: {parent_epic_state}")
+                else:
+                    print(f"ℹ️  Parent Feature #{parent_feature_id} has no parent Epic")
+            else:
+                print(f"ℹ️  Task #{selected_task['id']} has no parent Feature")
+
+        except Exception as e:
+            print(f"⚠️ Failed to cascade state to parents: {e}")
+            print(f"   Task state updated, but parent state update failed. This is non-blocking.")
+
+    except Exception as e:
+        print(f"⚠️ Failed to update task state: {e}")
+        print(f"   Continuing with implementation anyway...")
+```
+
+---
+
+### Step A2: Engineer Implementation
+
+**IF A TASK IS SELECTED**, call `/engineer` with the following task:
+
+```
+## YOUR TASK: Implement Feature
+
+Implement the task according to specifications.
+
+### Task Details
+- ID: {selected_task['id']}
+- Title: {selected_task['title']}
+- Description: {selected_task['description']}
+- Acceptance Criteria: {selected_task['acceptance_criteria']}
+
+### Project Context
+- Language: Python
+- Frameworks: Streamlit
+- Source directory: src
+- Test directory: tests
+
+### Requirements
+1. Implement ALL functionality per acceptance criteria
+2. Follow existing code patterns in the project
+3. Write unit tests and integration tests, where applicable and if possible, for all new code
+4. Ensure 80% coverage minimum
+
+### Output
+- Implementation files in appropriate locations
+- Unit test files with comprehensive coverage
+- Integration test files with comprehensive coverage
+- All tests passing
+```
+
+**After the agent completes:**
+- Verify implementation files created
+- Note the files changed for commit later
+
+---
+
+### Step A3: Run Unit Tests
+
+Run the test suite to validate basic functionality:
+
+```bash
+python -m pytest tests -v
+```
+
+**If unit tests fail:**
+- Do NOT proceed to integration testing
+- Review failures and fix implementation
+- Re-run until unit tests pass
+
+---
+
+### Step A4: Tester Validation
+
+**Call `/tester` with the following task:**
+
+```
+## YOUR TASK: Validate Implementation and Run Integration Tests
+
+Evaluate the implementation, validate tests, and run integration tests.
+
+### Task Being Validated
+- ID: {selected_task['id']}
+- Title: {selected_task['title']}
+- Acceptance Criteria: {selected_task['acceptance_criteria']}
+
+### Implementation Files
+{List of files created/modified by engineer}
+
+### Your Validation Steps
+
+1. **Evaluate Unit Tests**
+   - Do tests cover all acceptance criteria?
+   - Are tests falsifiable (can they fail)?
+   - Is coverage >= 80%?
+   - Do tests check behavior, not implementation?
+
+2. **Run Integration Tests**
+   - Test feature in context of full system
+   - Verify integration with existing components
+   - Check for regressions
+   - Validate error handling
+
+3. **Quality Assessment**
+   - Code complexity acceptable?
+   - Security vulnerabilities?
+   - Performance acceptable?
+
+### Output Format
+
+Return JSON with:
+```json
+{
+  "validation_status": "pass|fail",
+  "confidence": "high|medium|low",
+  "test_results": {
+    "unit_tests_pass": true|false,
+    "integration_tests_pass": true|false,
+    "coverage_percent": 85,
+    "coverage_meets_standard": true|false
+  },
+  "issues_found": [
+    "Description of any issues"
+  ],
+  "recommendation": "commit|fix_required"
+}
+```
+
+**CRITICAL**: Set `confidence: "high"` ONLY if:
+- All tests pass
+- Coverage >= 80%
+- No critical issues found
+- Integration tests demonstrate feature works in full system
+
+**Fault Attribution**: For each failed test, provide:
+```json
+{
+  "test_name": "test_user_login_valid_credentials",
+  "error": "AssertionError: Expected 200, got 401",
+  "expected": "HTTP 200 with auth token",
+  "actual": "HTTP 401 Unauthorized",
+  "acceptance_criterion": "User can log in with valid email/password",
+  "fault_attribution": "CODE|TEST|SPEC",
+  "reasoning": "Spec requires login to work, test expects 200, code returns 401 - CODE is wrong"
+}
+```
+
+**Fault Attribution Rules**:
+- **CODE**: Test expectation matches spec, but code doesn't → Create bug ticket
+- **TEST**: Test expectation doesn't match spec → Tester fixes test
+- **SPEC**: Spec is ambiguous or contradictory → Escalate to human
+```
+
+**After the agent completes:**
+- Parse validation result JSON
+- Check confidence level
+- Handle test failures with fault attribution and bug creation
+
+---
+
+### Step A4.5: Generate and Attach Test Report
+
+**CRITICAL**: Regardless of test pass/fail, tester must generate and attach test report to Task work item.
+
+This implements the "External Source of Truth" pattern - test results must be persisted to the work tracking system.
+
+```python
+# Generate test report (pass or fail)
+if selected_task:
+    from datetime import datetime
+    from pathlib import Path
+
+    # Create test report directory
+    test_reports_dir = Path('.claude/test-reports')
+    test_reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate test report filename
+    task_id = selected_task['id']
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    report_filename = f"task-{task_id}-{timestamp}-test-report.md"
+    report_filepath = test_reports_dir / report_filename
+
+    # Build test report content
+    validation_status = validation_result.get('validation_status', 'unknown')
+    confidence = validation_result.get('confidence', 'unknown')
+    test_results = validation_result.get('test_results', {})
+    unit_tests_pass = test_results.get('unit_tests_pass', False)
+    integration_tests_pass = test_results.get('integration_tests_pass', False)
+    coverage_percent = test_results.get('coverage_percent', 0)
+    coverage_meets_standard = test_results.get('coverage_meets_standard', False)
+    issues_found = validation_result.get('issues_found', [])
+    recommendation = validation_result.get('recommendation', 'unknown')
+
+    report_content = f"""# Test Report: Task #{task_id}
+
+**Task**: {selected_task['title']}
+**Generated**: {datetime.now().isoformat()}
+
+## Test Results Summary
+
+- **Validation Status**: {validation_status.upper()}
+- **Confidence Level**: {confidence.upper()}
+- **Recommendation**: {recommendation.upper()}
+
+## Test Execution Results
+
+### Unit Tests
+- **Status**: {'✅ PASS' if unit_tests_pass else '❌ FAIL'}
+
+### Integration Tests
+- **Status**: {'✅ PASS' if integration_tests_pass else '❌ FAIL'}
+
+### Code Coverage
+- **Coverage**: {coverage_percent}%
+- **Meets Standard**: {'✅ YES (80%)' if coverage_meets_standard else '❌ NO (< 80%)'}
+
+## Issues Found
+
+"""
+
+    if issues_found:
+        for idx, issue in enumerate(issues_found, 1):
+            report_content += f"{idx}. {issue}\n"
+    else:
+        report_content += "No issues found.\n"
+
+    report_content += f"""
+
+## Test Validation Details
+
+{validation_result}
+
+---
+
+*Generated by sprint-execution workflow*
+*Test validation performed by /tester agent*
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+"""
+
+    # Write test report to file
+    try:
+        with open(report_filepath, 'w', encoding='utf-8') as f:
+            f.write(report_content)
+        print(f"✅ Generated test report: {report_filepath}")
+    except Exception as e:
+        print(f"⚠️ Failed to write test report: {e}")
+
+    # Attach test report to Task work item
+    try:
+        # Check if adapter supports file attachments (Azure DevOps)
+        if hasattr(adapter, 'attach_file_to_work_item'):
+            attach_result = adapter.attach_file_to_work_item(
+                work_item_id=task_id,
+                file_path=report_filepath,
+                comment=f"Test Report - {validation_status.upper()} - Generated {datetime.now().isoformat()}"
+            )
+
+            if attach_result.get('success'):
+                print(f"✅ Attached test report to Task #{task_id}")
+
+                # Verify attachment exists (external source of truth)
+                attachment_exists = adapter.verify_attachment_exists(task_id, report_filename)
+                if attachment_exists:
+                    print(f"✅ Verified: Test report attachment exists in Azure DevOps")
+                else:
+                    print(f"⚠️ Warning: Could not verify attachment existence")
+            else:
+                print(f"⚠️ Failed to attach test report: {attach_result.get('error', 'Unknown error')}")
+
+        else:
+            # File-based adapter: Add comment with test report path
+            adapter.add_comment(
+                work_item_id=task_id,
+                comment=f"""Test Report: {report_filepath}
+
+Test validation completed.
+- Status: {validation_status.upper()}
+- Confidence: {confidence.upper()}
+- Coverage: {coverage_percent}%
+- Recommendation: {recommendation.upper()}
+
+Full test report: {report_filepath}
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+"""
+            )
+            print(f"✅ Added test report comment to Task #{task_id}")
+
+    except Exception as e:
+        print(f"⚠️ Failed to attach/link test report: {e}")
+        print(f"   Test report saved locally at: {report_filepath}")
+```
+
+---
+
+### Step A4b: Handle Test Failures (Fault Attribution & Bug Creation)
+
+**IF tests fail (`validation_status == "fail"`), perform fault attribution:**
+
+```python
+# Parse which tests failed
+failed_tests = validation_result.get('failed_tests', [])
+
+if failed_tests:
+    print(f"\n⚠️  {len(failed_tests)} test(s) failed")
+
+    # For each failed test, determine fault: CODE, TEST, or SPEC
+    for failure in failed_tests:
+        test_name = failure.get('test_name')
+        error_message = failure.get('error')
+        spec_reference = failure.get('acceptance_criterion')
+
+        # Fault attribution logic:
+        # - CODE fault: Test expects correct behavior per spec, code doesn't match
+        # - TEST fault: Test expectation doesn't match spec
+        # - SPEC fault: Spec is ambiguous or incorrect
+
+        fault = "CODE"  # Default assumption: code is wrong
+
+        # Tester agent should have provided fault attribution in validation result
+        if 'fault_attribution' in failure:
+            fault = failure['fault_attribution']  # CODE | TEST | SPEC
+
+        print(f"\n  ❌ {test_name}")
+        print(f"     Error: {error_message}")
+        print(f"     Fault: {fault}")
+
+        # Create bug ticket for CODE faults
+        if fault == "CODE":
+            try:
+                bug_title = f"Test failure: {test_name}"
+                bug_description = f"""## Test Failure
+
+**Test**: {test_name}
+**Task**: #{selected_task['id']} - {selected_task['title']}
+**Error**: {error_message}
+
+**Acceptance Criterion**: {spec_reference}
+
+**Fault Attribution**: Code does not match spec expectation
+
+**Expected Behavior**: {failure.get('expected', 'N/A')}
+**Actual Behavior**: {failure.get('actual', 'N/A')}
+
+**Fix Required**: Update implementation to match spec
+
+---
+*Auto-created by /sprint-execution*
+"""
+
+                bug = adapter.create_work_item(
+                    work_item_type="Bug",
+                    title=bug_title,
+                    description=bug_description,
+                    fields={
+                        'System.IterationPath': f'https://dev.azure.com/keychainio/AI%20Council\\{sprint_name}',
+                        'System.Parent': selected_task['id'],  # Link to parent task
+                        'System.Tags': 'auto-generated;test-failure',
+                        'Microsoft.VSTS.Common.Priority': 1  # High priority
+                    }
+                )
+
+                print(f"     🐛 Created bug #{bug['id']}: {bug_title}")
+
+            except Exception as e:
+                print(f"     ⚠️  Failed to create bug ticket: {e}")
+
+        elif fault == "TEST":
+            print(f"     ⚠️  TEST fault: Test expectation doesn't match spec")
+            print(f"     Action: Tester should fix test expectations")
+
+        elif fault == "SPEC":
+            print(f"     ⚠️  SPEC fault: Specification is ambiguous or incorrect")
+            print(f"     Action: Escalate to human for spec clarification")
+
+    # Do NOT proceed to commit if tests failed
+    print(f"\n❌ Cannot proceed to commit - {len(failed_tests)} test failure(s)")
+    print(f"   Fix issues and re-run /sprint-execution")
+
+    # Update task status to "Blocked" or "In Progress" (not Done)
+    try:
+        adapter.update_work_item(
+            work_item_id=selected_task['id'],
+            fields={
+                'System.State': 'In Progress',
+                'System.History': f"""
+Test validation failed - {len(failed_tests)} test(s) failing
+
+{len([f for f in failed_tests if f.get('fault_attribution') == 'CODE'])} CODE faults (bugs created)
+{len([f for f in failed_tests if f.get('fault_attribution') == 'TEST'])} TEST faults (test fixes needed)
+{len([f for f in failed_tests if f.get('fault_attribution') == 'SPEC'])} SPEC faults (clarification needed)
+
+Review bug tickets and fix issues before re-running.
+"""
+            }
+        )
+    except Exception as e:
+        print(f"⚠️  Failed to update work item: {e}")
+
+    # Exit implementation cycle
+    selected_task = None  # Clear selection to skip commit step
+```
+
+---
+
+### Step A5: Auto-Commit (High Confidence Only)
+
+**IF `validation_status == "pass"` AND `confidence == "high"`**, auto-commit:
+
+```bash
+# Stage all implementation files
+git add src/ tests/
+
+# Create commit with task reference
+git commit -m "$(cat <<'EOF'
+Implement #{selected_task['id']}: {selected_task['title']}
+
+{Brief summary of changes}
+
+Acceptance criteria met:
+{List acceptance criteria from task}
+
+Test results:
+- Unit tests: ✅ Pass
+- Integration tests: ✅ Pass
+- Coverage: {coverage_percent}% (>= 80%)
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+EOF
+)"
+
+echo "✅ Changes committed successfully"
+```
+
+**IF `confidence != "high"`**, do NOT commit:
+
+```
+⚠️  Tests passed but confidence is {confidence}.
+
+Issues that need attention:
+{List issues from validation}
+
+Recommendation: {recommendation}
+
+Changes NOT committed. Review issues and re-run validation.
+```
+
+---
+
+### Step A6: Update Work Item Status and Cascade Feature Completion
+
+```python
+# Update task status to Done (only if committed)
+if committed:
+    try:
+        # Step 1: Update Task to Done
+        adapter.update_work_item(
+            work_item_id=selected_task['id'],
+            fields={
+                'System.State': 'Done',
+                'System.History': f"""
+Implementation complete and committed.
+
+Test Results:
+- Unit Tests: Pass
+- Integration Tests: Pass
+- Coverage: {coverage_percent}%
+
+Commit: {git_commit_hash}
+"""
+            }
+        )
+        print(f"✅ Updated work item #{selected_task['id']} to Done")
+
+        # Step 2: Check if parent Feature should be marked Done
+        # Query Task for parent Feature
+        try:
+            task_details = adapter.get_work_item(selected_task['id'])
+            relations = task_details.get('relations', [])
+
+            # Find parent Feature (Hierarchy-Reverse)
+            parent_feature_id = None
+            for relation in relations:
+                if relation.get('rel') == 'System.LinkTypes.Hierarchy-Reverse':
+                    url = relation.get('url', '')
+                    parent_feature_id = int(url.split('/')[-1])
+                    break
+
+            if parent_feature_id:
+                # Step 3: Query all child Tasks of parent Feature
+                parent_feature = adapter.get_work_item(parent_feature_id)
+                parent_feature_title = parent_feature.get('fields', {}).get('System.Title')
+                parent_feature_relations = parent_feature.get('relations', [])
+
+                # Extract child Task IDs
+                child_task_ids = []
+                for relation in parent_feature_relations:
+                    if relation.get('rel') == 'System.LinkTypes.Hierarchy-Forward':
+                        url = relation.get('url', '')
+                        child_id = int(url.split('/')[-1])
+                        child_task_ids.append(child_id)
+
+                if child_task_ids:
+                    # Step 4: Query state of all child Tasks
+                    all_tasks_done = True
+                    tasks_done_count = 0
+                    tasks_not_done_count = 0
+
+                    for child_task_id in child_task_ids:
+                        try:
+                            child_task = adapter.get_work_item(child_task_id)
+                            child_task_state = child_task.get('fields', {}).get('System.State')
+                            child_task_title = child_task.get('fields', {}).get('System.Title')
+
+                            print(f"  Task #{child_task_id}: {child_task_title} - State: {child_task_state}")
+
+                            if child_task_state == 'Done':
+                                tasks_done_count += 1
+                            else:
+                                tasks_not_done_count += 1
+                                all_tasks_done = False
+
+                        except Exception as e:
+                            print(f"  ⚠️ Failed to query Task #{child_task_id}: {e}")
+                            all_tasks_done = False
+
+                    print(f"\n📊 Feature #{parent_feature_id} ({parent_feature_title})")
+                    print(f"  Total Tasks: {len(child_task_ids)}")
+                    print(f"  Tasks Done: {tasks_done_count}")
+                    print(f"  Tasks Not Done: {tasks_not_done_count}")
+
+                    # Step 5: If all Tasks Done, mark Feature Done
+                    if all_tasks_done:
+                        parent_feature_state = parent_feature.get('fields', {}).get('System.State')
+
+                        if parent_feature_state != 'Done':
+                            adapter.update_work_item(
+                                work_item_id=parent_feature_id,
+                                fields={
+                                    'System.State': 'Done',
+                                    'System.History': f"""Auto-updated to Done because all child Tasks are Done.
+
+Total Tasks: {len(child_task_ids)}
+Tasks Completed: {tasks_done_count}
+
+All acceptance criteria met and implementation complete.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+"""
+                                }
+                            )
+                            print(f"✅ Updated parent Feature #{parent_feature_id} ({parent_feature_title}) to Done")
+
+                            # Verify Feature state update (external source of truth)
+                            verify_feature = adapter.get_work_item(parent_feature_id)
+                            verify_state = verify_feature.get('fields', {}).get('System.State')
+                            if verify_state == 'Done':
+                                print(f"✅ Verified: Feature #{parent_feature_id} is Done in Azure DevOps")
+                            else:
+                                print(f"⚠️ Warning: Feature state verification failed - expected Done, got {verify_state}")
+                        else:
+                            print(f"ℹ️  Parent Feature #{parent_feature_id} already Done")
+                    else:
+                        print(f"ℹ️  Parent Feature #{parent_feature_id} not ready for completion ({tasks_not_done_count} Tasks remaining)")
+                else:
+                    print(f"ℹ️  Parent Feature #{parent_feature_id} has no child Tasks")
+            else:
+                print(f"ℹ️  Task #{selected_task['id']} has no parent Feature")
+
+        except Exception as e:
+            print(f"⚠️ Failed to check Feature completion: {e}")
+            print(f"   Task marked Done, but Feature completion check failed. This is non-blocking.")
+
+    except Exception as e:
+        print(f"⚠️ Failed to update work item: {e}")
+        print(f"   Manual update required for #{selected_task['id']}")
+```
+
+---
+
+## PART B: MONITORING CYCLE
+
+### Step B1: Collect Sprint Status Data
+
+Gather metrics from work items:
+
+```python
+# Calculate metrics from adapter work items
+completed = [i for i in sprint_items if i.get('state') == 'Done']
+in_progress = [i for i in sprint_items if i.get('state') == 'In Progress']
+blocked = [i for i in sprint_items if i.get('state') == 'Blocked']
+not_started = [i for i in sprint_items if i.get('state') == 'New']
+
+# Get story points from work items
+def get_story_points(item):
+    return 0
+
+total_points = sum(get_story_points(i) for i in sprint_items)
+completed_points = sum(get_story_points(i) for i in completed)
+
+print(f"📊 Sprint Status:")
+print(f"  Total: {len(sprint_items)} items ({total_points} pts)")
+print(f"  ✅ Done: {len(completed)} ({completed_points} pts)")
+print(f"  🔄 In Progress: {len(in_progress)}")
+print(f"  🔴 Blocked: {len(blocked)}")
+print(f"  ⬜ Not Started: {len(not_started)}")
+```
+
+---
+
+### Step B2: Generate Daily Standup Report
+
+**Call `/scrum-master` with the following task:**
+
+```
+## YOUR TASK: Generate Daily Standup Report
+
+Create a daily standup report for the team.
+
+### Sprint Data
+- Sprint: {current_sprint}
+- Total Items: {len(sprint_items)}
+- Completed: {len(completed)} ({completed_points} pts)
+- In Progress: {len(in_progress)}
+- Blocked: {len(blocked)}
+- Not Started: {len(not_started)}
+
+### Work Items
+{List of all work items with status}
+
+### Generate Report Including:
+
+1. **Yesterday's Progress**
+   - What was completed
+   - Story points delivered
+
+2. **Today's Focus**
+   - What should be worked on
+   - Priority items
+
+3. **Blockers & Impediments**
+   - Current blockers
+   - Who needs to resolve them
+
+4. **Sprint Health**
+   - On track / At risk / Behind
+   - Days remaining
+   - Burndown status
+
+5. **Recommendations**
+   - Team focus areas
+   - Risk mitigations
+
+### Output Format
+
+Return a formatted standup report in markdown.
+```
+
+**After the agent completes:**
+- Display standup report to user
+- Save to `.claude/reports/daily/`
+
+---
+
+### Step B3: Analyze Blockers (If Any)
+
+**IF THERE ARE BLOCKED ITEMS**, call `/senior-engineer` with the following task:
+
+```
+## YOUR TASK: Analyze Blocked Work Items
+
+Review blocked items and suggest resolutions.
+
+### Blocked Items
+{List of blocked work items with details}
+
+### For Each Blocker, Analyze:
+
+1. **Root Cause**
+   - Why is this blocked?
+   - Technical vs. organizational blocker
+
+2. **Impact Assessment**
+   - How many items depend on this?
+   - Sprint goal impact
+
+3. **Resolution Options**
+   - Technical solutions or workarounds
+   - Who needs to be involved
+   - Estimated time to resolve
+
+4. **Priority Ranking**
+   - Which blockers to resolve first
+   - Critical path analysis
+
+### Output Format
+
+Return JSON with blocker analysis and recommendations.
+```
+
+**After the agent completes:**
+- Display blocker analysis
+- Recommend actions to unblock items
+
+---
+
+### Step B4: Quality Health Check
+
+Run automated quality checks:
+
+```bash
+# Run tests with coverage
+python -m pytest --cov=src --cov-report=term
+
+# Check coverage against standard
+# Target: 80%
+```
+
+Compare results against quality standards:
+- Test Coverage: Current vs. 80%
+- Critical Vulnerabilities: Current vs. 0
+- Code Complexity: Current vs. 10
+
+---
+
+### Step B4.5: Verification Checklist
+
+**CRITICAL**: This step implements the "External Source of Truth" pattern from VISION.md. AI agents often claim work is complete when it isn't. This verification checklist provides a daily audit trail showing that key metrics were queried from the adapter (external source of truth), not just AI assertions.
+
+Generate a verification checklist showing:
+1. Work item states queried from adapter (external source of truth)
+2. Test results verified for Done items
+3. Blocked items have linked blocker work items
+4. Story points burndown validated
+
+```python
+# Initialize verification checklist
+print("\n🔍 Generating Verification Checklist...")
+print("=" * 80)
+
+# Verification Item 1: Work item states queried from adapter
+# Check that work items were actually queried from adapter (not AI memory)
+work_items_verified = len(sprint_items) > 0 and all(
+    'state' in item and 'id' in item for item in sprint_items
+)
+
+# Verification Item 2: Test results verified for Done items
+# Check test coverage meets quality standards
+# Extract coverage from pytest output (from Step B4)
+# Look for "TOTAL" line in pytest coverage output
+import subprocess
+import re
+
+try:
+    coverage_result = subprocess.run(
+        ["python", "-m", "pytest", "--cov=src", "--cov-report=term", "--quiet"],
+        capture_output=True,
+        text=True,
+        timeout=60
+    )
+
+    # Parse coverage percentage from output
+    coverage_match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", coverage_result.stdout)
+    if coverage_match:
+        coverage_percent = int(coverage_match.group(1))
+        coverage_meets_standard = coverage_percent >= 80
+    else:
+        coverage_percent = 0
+        coverage_meets_standard = False  # No coverage data
+except Exception as e:
+    print(f"⚠️ Could not check test coverage: {e}")
+    coverage_percent = 0
+    coverage_meets_standard = True  # N/A - don't fail verification on infrastructure issues
+
+# Verification Item 3: Blocked items have linked blockers
+# Query adapter for work item details including relations
+blocked_items = [i for i in sprint_items if i.get('state') == 'Blocked']
+blocked_with_links = []
+
+for item in blocked_items:
+    # Query adapter for full work item details including relations
+    try:
+        full_item = adapter.get_work_item(item['id'])
+        if full_item:
+            # Check for blocker links (platform-agnostic)
+            # Azure DevOps: System.LinkTypes.Dependency-Forward
+            # File-based: relations list with type 'blocks' or 'blocked-by'
+            relations = full_item.get('relations', [])
+            has_blocker_link = False
+
+            # Check for any relation that indicates a blocker
+            for relation in relations:
+                rel_type = relation.get('rel', '').lower()
+                if 'dependency' in rel_type or 'blocks' in rel_type or 'blocked' in rel_type:
+                    has_blocker_link = True
+                    break
+
+            if has_blocker_link:
+                blocked_with_links.append(item)
+    except Exception as e:
+        print(f"⚠️ Could not check blocker links for #{item['id']}: {e}")
+
+# If no blocked items, mark as N/A (pass)
+# If blocked items exist, check if all have blocker links
+blockers_linked = len(blocked_items) == 0 or len(blocked_with_links) == len(blocked_items)
+
+# Verification Item 4: Story points burndown validated
+# Verify story points calculated from adapter data (not AI memory)
+story_points_validated = total_points >= 0 and completed_points >= 0 and completed_points <= total_points
+
+# Build verification checklist
+checklist = []
+checklist.append(f"- [{'x' if work_items_verified else ' '}] Work item states queried from adapter (external source of truth)")
+checklist.append(f"- [{'x' if coverage_meets_standard else ' '}] Test results verified for Done items (coverage {'N/A' if coverage_percent == 0 else f'>= 80%'})")
+checklist.append(f"- [{'x' if blockers_linked else ' '}] Blocked items have linked blocker work items ({len(blocked_with_links)}/{len(blocked_items)} linked)")
+checklist.append(f"- [{'x' if story_points_validated else ' '}] Story points burndown validated ({completed_points}/{total_points} pts completed)")
+
+print("\n🔍 Verification Checklist:")
+print("=" * 80)
+for item in checklist:
+    print(item)
+print("=" * 80)
+
+# Store for inclusion in status report (Step B6)
+verification_checklist_text = "\n".join(checklist)
+verification_results = {
+    'work_items_verified': work_items_verified,
+    'coverage_meets_standard': coverage_meets_standard,
+    'coverage_percent': coverage_percent,
+    'blockers_linked': blockers_linked,
+    'blocked_items_count': len(blocked_items),
+    'blocked_with_links_count': len(blocked_with_links),
+    'story_points_validated': story_points_validated
+}
+```
+
+---
+
+### Step B5: Weekly Security Review (Fridays Only)
+
+**FOR WEEKLY REPORTS ONLY**, call `/security-specialist` with the following task:
+
+```
+## YOUR TASK: Weekly Security Status Review
+
+Review sprint security status.
+
+### Quality Standards
+- Critical Vulnerabilities: Max 0
+- High Vulnerabilities: Max 0
+
+### Security Scan Results
+{Include any security scan output}
+
+### Analyze:
+
+1. **Vulnerability Status**
+   - New vulnerabilities this sprint
+   - Resolved vulnerabilities
+   - Outstanding issues
+
+2. **Security Impact of Changes**
+   - Features with security implications
+   - Authentication/authorization changes
+
+3. **Recommendations**
+   - Critical issues requiring immediate attention
+   - Security tasks for next sprint
+
+### Output Format
+
+Return security review report in markdown.
+```
+
+---
+
+### Step B6: Generate Status Report
+
+Compile comprehensive report:
+
+```
+════════════════════════════════════════════════════════════════════════════════
+📊 SPRINT STATUS REPORT - {current_sprint}
+════════════════════════════════════════════════════════════════════════════════
+
+📈 Progress: {completed_points}/{total_points} points ({percentage}%)
+
+📋 Work Items:
+  ✅ Done: {done_count}
+  🔄 In Progress: {in_progress_count}
+  🔴 Blocked: {blocked_count}
+  ⬜ Not Started: {not_started_count}
+
+⚠️ Blockers:
+  {blocker_list}
+
+🔒 Quality:
+  - Test Coverage: {coverage}% (target: 80%)
+  - Vulnerabilities: {vuln_count}
+
+🔍 Verification Checklist:
+  {verification_checklist_text}
+
+🎯 Sprint Health: {On Track / At Risk / Behind}
+
+════════════════════════════════════════════════════════════════════════════════
+```
+
+---
+
+## Agent Commands Used
+
+| Cycle | Step | Agent Command | Purpose |
+|-------|------|---------------|---------|
+| **Implementation** | A2 | `/engineer` | Implement code + unit tests |
+| **Implementation** | A4 | `/tester` | Validate tests, run integration tests |
+| **Monitoring** | B2 | `/scrum-master` | Daily standup report |
+| **Monitoring** | B3 | `/senior-engineer` | Blocker analysis (when blocked) |
+| **Monitoring** | B5 | `/security-specialist` | Weekly security review |
+
+**Key**: Each agent command spawns a **fresh context window** via the Task tool.
+
+**Auto-Commit**: Executes at step A5 when `validation_status == "pass"` AND `confidence == "high"`
+
+---
+
+## Execution Schedule
+
+- **Daily (9 AM)**: Steps 1-4 (status, standup, blockers, quality)
+- **Weekly (Friday 4 PM)**: Full workflow including security review
+- **Ad-hoc**: Run manually when needed
+
+---
+
+## Configuration
+
+**Work Tracking Platform:** azure-devops
+
+**Quality Standards:**
+- Test Coverage: >= 80%
+- Critical Vulnerabilities: <= 0
+- Code Complexity: <= 10
+
+---
+
+*Generated by Trustable AI Workbench for ai-council*

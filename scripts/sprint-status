@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Sprint Status CLI wrapper
+# Provides hyphenated command name while Python module uses underscores
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$SCRIPT_DIR/sprint_status.py" "$@"

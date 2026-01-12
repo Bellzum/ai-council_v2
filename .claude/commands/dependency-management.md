@@ -1,0 +1,373 @@
+# Dependency Management Workflow
+
+**Project**: ai-council
+**Workflow**: Dependency Management
+**Purpose**: Monitor, update, and secure project dependencies
+
+## Output Formatting Requirements
+
+**IMPORTANT**: Use actual Unicode emojis in reports, NOT GitHub-style shortcodes.
+
+---
+
+## Workflow Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  DEPENDENCY MANAGEMENT                                                      │
+│                                                                             │
+│  Step 1: Scan current dependencies                                         │
+│  Step 2: Categorize by priority                                            │
+│  Step 3: /senior-engineer → Impact analysis (if outdated)                  │
+│  Step 4: /security-specialist → Vulnerability assessment (if vulns)        │
+│  Step 5: Generate update plan                                              │
+│  Step 6: Create work items                                                 │
+│  Step 7: Generate health report                                            │
+│                                                                             │
+│  Each agent command spawns a FRESH CONTEXT WINDOW via Task tool            │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Step 1: Scan Current Dependencies
+
+**Python Project:**
+```bash
+# List current dependencies
+pip list --format=json > .claude/temp/current-deps.json
+
+# Check for outdated packages
+pip list --outdated --format=json > .claude/temp/outdated-deps.json
+
+# Security audit (requires pip-audit)
+pip-audit --format=json > .claude/temp/security-audit.json 2>&1 || true
+```
+
+
+---
+
+## Step 2: Categorize Dependencies
+
+```python
+# Parse scan results
+import json
+from pathlib import Path
+
+# Load results
+outdated = json.loads(Path(".claude/temp/outdated-deps.json").read_text())
+security = json.loads(Path(".claude/temp/security-audit.json").read_text())
+
+# Categorize
+critical_security = []  # CVE Critical
+high_priority = []      # CVE High or EOL
+medium_priority = []    # Minor updates
+low_priority = []       # Patch updates
+
+for vuln in security.get('vulnerabilities', []):
+    severity = vuln.get('severity', 'unknown')
+    if severity == 'critical':
+        critical_security.append(vuln)
+    elif severity == 'high':
+        high_priority.append(vuln)
+    else:
+        medium_priority.append(vuln)
+
+print(f"📦 Dependency Scan Results:")
+print(f"  🔴 Critical: {len(critical_security)}")
+print(f"  🟠 High: {len(high_priority)}")
+print(f"  🟡 Medium: {len(medium_priority)}")
+print(f"  🟢 Low: {len(low_priority)}")
+```
+
+---
+
+## Step 3: Analyze Update Impact (If Outdated)
+
+**IF THERE ARE OUTDATED DEPENDENCIES**, call `/senior-engineer` with the following task:
+
+```
+## YOUR TASK: Analyze Dependency Update Impact
+
+Review outdated dependencies and assess update impact.
+
+### Outdated Dependencies
+{List of outdated packages with current and latest versions}
+
+### For Each Dependency, Analyze:
+
+1. **Breaking Changes**
+   - Major version changes?
+   - API changes in changelog?
+   - Migration required?
+
+2. **Update Complexity**
+   - Simple: Patch update, no changes needed
+   - Medium: Minor update, small code changes
+   - Complex: Major update, significant refactoring
+
+3. **Testing Requirements**
+   - Unit tests affected?
+   - Integration tests needed?
+   - Manual testing required?
+
+4. **Update Strategy**
+   - Which dependencies can be updated together?
+   - Which require isolated updates?
+   - Recommended order
+
+### Output Format
+
+Return JSON with:
+```json
+{
+  "updates": [
+    {
+      "package": "...",
+      "current": "1.0.0",
+      "latest": "2.0.0",
+      "breaking_changes": true,
+      "complexity": "complex",
+      "testing": ["unit", "integration"],
+      "notes": "..."
+    }
+  ],
+  "update_groups": [
+    ["package1", "package2"],  // Can update together
+  ],
+  "recommended_order": ["critical-first", "..."]
+}
+```
+```
+
+**After the agent completes:**
+- Store impact analysis
+- Use for update planning
+
+---
+
+## Step 4: Assess Vulnerabilities (If Any)
+
+**IF THERE ARE VULNERABILITIES**, call `/security-specialist` with the following task:
+
+```
+## YOUR TASK: Vulnerability Risk Assessment
+
+Assess security vulnerabilities in dependencies.
+
+### Quality Standards
+- Critical Vulnerabilities: Max 0
+- High Vulnerabilities: Max 0
+
+### Vulnerabilities Found
+{List of vulnerabilities with CVE details}
+
+### For Each Vulnerability, Assess:
+
+1. **Exploitability**
+   - Network exploitable?
+   - Requires user interaction?
+   - Known exploits in wild?
+
+2. **Impact**
+   - Data exposure risk?
+   - System compromise risk?
+   - Availability impact?
+
+3. **Priority**
+   - CRITICAL: Fix immediately (within 24 hours)
+   - HIGH: Fix this sprint
+   - MEDIUM: Fix next sprint
+   - LOW: Add to backlog
+
+4. **Workarounds**
+   - Can vulnerability be mitigated without update?
+   - Configuration changes that reduce risk?
+
+### Output Format
+
+Return JSON with:
+```json
+{
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2024-XXXX",
+      "package": "...",
+      "severity": "critical",
+      "exploitability": "high",
+      "priority": "CRITICAL",
+      "fix_by": "24 hours",
+      "workaround": "..."
+    }
+  ],
+  "summary": {
+    "critical": 1,
+    "high": 2,
+    "compliance": "FAIL"
+  }
+}
+```
+```
+
+**After the agent completes:**
+- Store vulnerability assessment
+- Flag critical issues for immediate action
+
+---
+
+## Step 5: Generate Update Plan
+
+Based on agent analyses:
+
+```markdown
+## Dependency Update Plan
+
+### 🚨 Critical (Fix Immediately)
+{Critical security vulnerabilities}
+
+### 🔴 High Priority (This Sprint)
+{High severity vulns + major outdated deps}
+
+### 🟡 Medium Priority (Next Sprint)
+{Minor updates with some complexity}
+
+### 🟢 Low Priority (Backlog)
+{Patch updates, documentation-only changes}
+
+### Update Groups
+1. Group A: [pkg1, pkg2] - Can update together
+2. Group B: [pkg3] - Update alone (breaking changes)
+
+### Testing Plan
+- Run full test suite after each group
+- Manual testing for UI-affecting updates
+```
+
+---
+
+## Step 6: Create Work Items
+
+For critical security updates:
+
+```python
+for vuln in critical_security:
+    work_item = {
+        'id': f"BUG-{next_id}",
+        'type': 'Bug',
+        'title': f"CRITICAL: Update {vuln['package']} ({vuln['cve']})",
+        'status': 'New',
+        'priority': 'P0',
+        'description': f"""## Security Vulnerability
+
+**Package**: {vuln['package']}
+**CVE**: {vuln['cve']}
+**Severity**: CRITICAL
+**CVSS Score**: {vuln.get('cvss', 'N/A')}
+
+## Description
+{vuln['description']}
+
+## Fix
+Update to version {vuln['fixed_version']}
+
+## Testing Required
+- [ ] Unit tests pass
+- [ ] Integration tests pass
+- [ ] Security scan confirms fix
+""",
+        'tags': ['security', 'critical', 'dependency'],
+    }
+
+    # Save work item
+    print(f"🚨 Created {work_item['id']}: {vuln['package']}")
+```
+
+---
+
+## Step 7: Generate Health Report
+
+```markdown
+# Dependency Health Report
+
+**Date**: {date}
+**Project**: ai-council
+
+---
+
+## 📊 Summary
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Total Dependencies | {count} | - |
+| Up to Date | {uptodate_count} | ✅ |
+| Outdated | {outdated_count} | ⚠️ |
+| Critical Vulns | {critical_count} | {✅ if 0 else ❌} |
+| High Vulns | {high_count} | {status} |
+
+**Health Score**: {score}/100
+
+---
+
+## 🔴 Critical Issues
+
+{List critical vulnerabilities}
+
+---
+
+## ⚠️ Updates Needed
+
+{List outdated packages by priority}
+
+---
+
+## 📋 Work Items Created
+
+{List of created work items}
+
+---
+
+## 📅 Next Review
+
+Recommended: {next_review_date}
+
+---
+
+*Generated by Trustable AI Workbench*
+```
+
+Save to `.claude/reports/dependencies/{date}.md`
+
+---
+
+## Agent Commands Used
+
+| Step | Agent Command | When | Purpose |
+|------|---------------|------|---------|
+| 3 | `/senior-engineer` | If outdated deps | Impact analysis |
+| 4 | `/security-specialist` | If vulnerabilities | Vulnerability assessment |
+
+**Key**: Each agent command spawns a **fresh context window** via the Task tool.
+
+---
+
+## Execution Schedule
+
+- **Monthly**: Full dependency scan and update planning
+- **Weekly**: Security vulnerability check
+- **Before Release**: Verify no critical vulnerabilities
+
+---
+
+## Configuration
+
+**Work Tracking Platform:** azure-devops
+
+**Quality Standards:**
+- Critical Vulnerabilities: <= 0
+- High Vulnerabilities: <= 0
+
+**Tech Stack:**
+- Python: pip, requirements.txt
+---
+
+*Generated by Trustable AI Workbench for ai-council*

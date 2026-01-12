@@ -1,0 +1,677 @@
+# Backlog Grooming Workflow
+
+**Project**: ai-council
+**Workflow**: Backlog Grooming
+**Purpose**: Refine and prioritize backlog items for upcoming sprints
+
+## Output Formatting Requirements
+
+**IMPORTANT**: Use actual Unicode emojis in reports, NOT GitHub-style shortcodes:
+- ✅ Ready for sprint | ⚠️ Needs refinement | ❌ Not ready
+- 🔴 High priority | 🟡 Medium | 🟢 Low
+- 📋 User story | 🐛 Bug | 🔧 Technical debt
+
+## Overview
+
+This workflow analyzes unrefined backlog items, assigns business value scores, identifies missing requirements, and prepares items for sprint planning.
+
+## Prerequisites
+
+- Access to azure-devops (https://dev.azure.com/keychainio)
+- Backlog items in "New" or "Proposed" state
+- Understanding of project priorities and business goals
+
+## Initialize Work Tracking
+
+```python
+# Initialize work tracking adapter (auto-selects Azure DevOps or file-based)
+import sys
+sys.path.insert(0, ".claude/skills")
+from work_tracking import get_adapter
+
+adapter = get_adapter()
+print(f"📋 Work Tracking: {adapter.platform}")
+
+# Optional: Non-interactive mode - set variables instead of prompts
+# This enables automated backlog grooming without user interaction
+#
+# To use non-interactive mode, set these variables before running the workflow:
+#   max_epics = 10  # Limit number of EPICs to groom (default: process all)
+#   target_epic_ids = [1001, 1002, 1003]  # Target specific EPIC IDs (default: all EPICs)
+#   auto_fix_hierarchy = True  # Automatically fix orphaned Features and empty EPICs (default: False)
+#
+# If these variables are set, the workflow will use these values instead of prompts.
+#
+# Validation constraints:
+#   - max_epics: positive integer (optional, default: None = all EPICs)
+#   - target_epic_ids: list of EPIC IDs (optional, default: [] = all EPICs)
+#   - auto_fix_hierarchy: boolean (optional, default: False)
+#
+# Example for automated grooming:
+#   max_epics = 5
+#   target_epic_ids = []  # Empty list = all EPICs
+#   auto_fix_hierarchy = True
+#
+# Leave unset (or set to None/empty) for interactive mode.
+# Check if variables are defined; if not, use defaults for interactive mode
+try:
+    max_epics
+except NameError:
+    max_epics = None  # Process all EPICs
+
+try:
+    target_epic_ids
+except NameError:
+    target_epic_ids = []  # Empty list = all EPICs
+
+try:
+    auto_fix_hierarchy
+except NameError:
+    auto_fix_hierarchy = False  # Require user approval for fixes
+```
+
+## Workflow Steps
+
+### Step 0: Epic Detection and Decomposition
+
+**Detect Epic-sized items in backlog:**
+
+```python
+# Query for Epics and large items
+epics = adapter.query_work_items(
+    filters={
+        'System.State': ['New', 'Proposed'],
+        'System.WorkItemType': ['Epic']
+    }
+)
+
+# Also find items with large story point estimates (>30 pts)
+
+print(f"📦 Found {len(epics)} Epic-sized items requiring decomposition")
+for epic in epics:
+    epic_type = epic.get('type') or epic.get('fields', {}).get('System.WorkItemType', 'Unknown')
+    print(f"  WI-{epic['id']}: {epic.get('title', 'Untitled')} [{epic_type}]")
+```
+
+**For each Epic, decompose into Features and Tasks:**
+
+**Call `/senior-engineer` agent for each Epic:**
+
+```
+## YOUR TASK: Decompose Epic into Features and Tasks
+
+Analyze the following Epic and break it down into a hierarchy of Features and Tasks.
+
+### Epic Details
+- ID: {epic['id']}
+- Title: {epic['title']}
+- Description: {epic['description']}
+- Business Value: {epic.get('business_value', 'Not specified')}
+
+### Decomposition Requirements
+
+1. **Feature Extraction**: Identify Features that comprise this Epic
+   - Each Feature should represent the minimum logically-related functionality that requires at least 50 estimated hours (~1 week, ~10 story points) to complete in aggregate
+   - Features should be cohesive capabilities that are measurable, testable, and valuable
+   - Features should be independently deliverable
+   - If remaining uncovered Epic functionality totals less than 50 hours, bundle the remaining functionality into one Feature
+   - Estimate story points for each Feature (minimum 10 pts, typically 10-30 pts)
+
+2. **Task Breakdown**: For each Feature, identify 2-5 Tasks that implement the Feature
+   - Each Task should be a specific, actionable work item (1-5 story points)
+   - Include implementation tasks, testing tasks, and deployment tasks
+   - Tasks must have clear acceptance criteria
+   - Exactly one task should request the complete implementation of the Feature code and comprehensive tests. This Implementation Task should:
+     * Contain enough context for an engineer to implement both the code and the tests solely based on the Task description and attachments
+     * Include detailed function specification of each testable technical component
+     * Specify required test types:
+       - **Unit tests**: Test individual functions/methods in isolation with code coverage targets (80% minimum)
+       - **Integration tests**: Test component interactions and external dependencies with code coverage targets
+       - **Edge-case whitebox testing**: Validate boundary conditions, error handling, and edge cases that black-box testing might miss
+       - **Acceptance tests**: Validate all acceptance criteria listed in the Feature are met
+     * Require tests to be falsifiable (tests must be able to detect actual failures, not just assert true)
+     * Require tests to be comprehensive relative to the scope and goals of the Feature
+     * Specify tests should be labeled according to the project's test classification taxonomy
+     * Require evidence that the feature was implemented completely
+   - Exactly one task should request validation of test quality and completeness. This Testing Task should:
+     * Validate presence of all required test types (unit, integration, edge-case, acceptance)
+     * Validate completeness of test coverage across all acceptance criteria from the Feature
+     * Validate falsifiability of tests by:
+       - Introducing intentional bugs/failures into the implementation
+       - Confirming tests detect these failures
+       - Removing the intentional bugs
+     * Confirm code coverage meets or exceeds 80% minimum
+     * Confirm feature coverage: all acceptance criteria have corresponding passing tests
+     * Run all tests and collect results
+     * Report verification results with evidence
+   - Deployment tasks if Feature requires deployment
+   - All Tasks should be non-overlapping and completable within one sprint
+
+3. **Dependency Analysis**: Identify dependencies between Features and Tasks
+   - Which Features must be completed before others?
+   - Which Tasks have dependencies on other Tasks?
+   - Are there external dependencies (APIs, data, infrastructure)?
+
+4. **Verification**: Ensure decomposition is complete
+   - Each Feature must have at least 10 story points (50 hours minimum) to avoid over-granular decomposition
+   - Sum of Task story points within each Feature should equal Feature estimate
+   - Sum of Feature story points should approximate Epic estimate
+   - All Epic acceptance criteria covered by Feature/Task breakdown
+   - No orphaned requirements (everything has a Feature and Tasks)
+   - If final remaining Epic functionality < 10 story points, it should be bundled with an existing Feature or into one final Feature
+
+### Output Format
+
+Return JSON with Epic decomposition:
+```json
+{
+  "epic_id": {epic['id']},
+  "epic_title": "{epic['title']}",
+  "features": [
+    {
+      "title": "Feature 1: User Authentication",
+      "description": "Implement secure user authentication with OAuth2. Users need ability to log in using their existing Google or GitHub accounts instead of creating new credentials. System must issue JWT tokens for authenticated sessions and support token refresh for long-lived sessions.",
+      "story_points": 13,
+      "acceptance_criteria": [
+        "Users can log in with Google/GitHub OAuth",
+        "JWT tokens issued on successful auth",
+        "Token refresh mechanism implemented",
+        "Failed auth attempts logged and rate-limited",
+        "User can revoke access tokens"
+      ],
+      "tasks": [
+        {
+          "title": "Implement OAuth2 integration and JWT token service with comprehensive tests",
+          "description": "Integrate Google/GitHub OAuth providers and create JWT token generation service. Configure OAuth callback endpoints, implement JWT signing with RS256, and create token validation logic.\n\nImplementation Requirements:\n- OAuth callback endpoints for Google and GitHub\n- Provider SDK configuration\n- JWT service with RS256 signing\n- Token validation logic\n\nTest Requirements:\n- **Unit tests**: Test individual functions (JWT generation, token parsing, signature verification) with 80% minimum coverage\n- **Integration tests**: Test full OAuth flow with provider SDKs, token lifecycle (issue, validate, refresh, revoke)\n- **Edge-case whitebox testing**: Validate boundary conditions (expired tokens, malformed tokens, invalid signatures, missing claims, concurrent token operations)\n- **Acceptance tests**: Verify all acceptance criteria (Google/GitHub login, JWT issuance, token refresh, failed auth logging, token revocation)\n\nTests must be falsifiable and comprehensive relative to OAuth security requirements.",
+          "story_points": 8,
+          "acceptance_criteria": [
+            "OAuth callback endpoints created for Google and GitHub",
+            "Provider SDKs configured and tested",
+            "JWT service generates valid tokens with user claims",
+            "Token validation correctly rejects invalid/expired tokens",
+            "Unit tests achieve >80% coverage for auth components",
+            "Integration tests verify full OAuth flow end-to-end",
+            "Edge-case tests validate boundary conditions and error handling",
+            "Acceptance tests verify all Feature acceptance criteria"
+          ]
+        },
+        {
+          "title": "Validate authentication test quality and completeness",
+          "description": "Validate presence, completeness, and falsifiability of all authentication tests.\n\nValidation Requirements:\n- **Validate presence**: Confirm unit tests, integration tests, edge-case tests, and acceptance tests exist\n- **Validate completeness**: Verify all Feature acceptance criteria have corresponding tests (Google/GitHub login, JWT issuance, token refresh, failed auth logging, token revocation)\n- **Validate falsifiability**: Introduce intentional bugs (e.g., disable signature verification, remove rate limiting, break token refresh) and confirm tests detect failures, then remove bugs\n- **Confirm code coverage**: Verify coverage meets 80% minimum\n- **Confirm feature coverage**: All acceptance criteria have passing tests\n- **Run all tests**: Execute complete test suite and collect results\n- **Report results**: Provide evidence of test quality with coverage reports and falsifiability verification",
+          "story_points": 3,
+          "acceptance_criteria": [
+            "All required test types present (unit, integration, edge-case, acceptance)",
+            "All Feature acceptance criteria have corresponding tests",
+            "Falsifiability verified: intentional bugs detected by tests",
+            "Code coverage meets 80% minimum",
+            "Feature coverage: all acceptance criteria have passing tests",
+            "Test results collected and reported with evidence"
+          ]
+        },
+        {
+          "title": "Deploy authentication service to staging",
+          "description": "Deploy OAuth and JWT services to staging environment, configure environment variables, and verify functionality in staging.",
+          "story_points": 2,
+          "acceptance_criteria": [
+            "Services deployed to staging environment",
+            "OAuth providers configured with staging credentials",
+            "Smoke tests pass in staging",
+            "Monitoring and logging verified"
+          ]
+        }
+      ],
+      "dependencies": ["Database schema for user accounts"]
+    }
+  ],
+  "total_story_points": 65,
+  "verification": {
+    "epic_estimate": {epic.get('story_points', 'N/A')},
+    "decomposed_total": 65,
+    "variance_percent": 8,
+    "all_acceptance_criteria_covered": true,
+    "missing_requirements": []
+  }
+}
+```
+```
+
+**After agent completes:**
+
+1. Parse Epic decomposition JSON
+2. Verify decomposition quality (story points sum, acceptance criteria coverage)
+3. Create work item hierarchy:
+
+```python
+epic_id = epic['id']
+decomposition = agent_result  # JSON from agent
+
+# Track created Features for verification
+created_features = []
+
+# Create Features under Epic
+for feature_data in decomposition['features']:
+    # Build comprehensive Feature description
+    feature_description = f"""{feature_data['description']}
+
+## Acceptance Criteria
+{chr(10).join(f"- {ac}" for ac in feature_data['acceptance_criteria'])}
+
+## Dependencies
+{chr(10).join(f"- {dep}" for dep in feature_data.get('dependencies', [])) if feature_data.get('dependencies') else 'None'}
+
+## Parent Epic
+WI-{epic_id}: {epic['title']}
+
+---
+*Feature created via /backlog-grooming*
+"""
+
+    # Create Feature work item
+    feature = adapter.create_work_item(
+        work_item_type="Feature",
+        title=feature_data['title'],
+        description=feature_description,
+        fields={
+            'System.Parent': epic_id,  # Link to parent Epic
+            'System.State': 'Proposed',  # Ready for sprint planning
+            'System.Tags': 'epic-decomposed; ready-for-planning'
+        }
+    )
+
+    print(f"  ✓ Created Feature WI-{feature['id']}: {feature_data['title']} ({feature_data['story_points']} pts)")
+
+    # Store Feature info for verification
+    created_features.append({
+        'id': feature['id'],
+        'title': feature_data['title'],
+        'expected_tasks': len(feature_data.get('tasks', []))
+    })
+
+    # Create Tasks under Feature
+    for task_data in feature_data.get('tasks', []):
+        task_description = f"""{task_data['description']}
+
+## Acceptance Criteria
+{chr(10).join(f"- {ac}" for ac in task_data['acceptance_criteria'])}
+
+## Parent Feature
+WI-{feature['id']}: {feature_data['title']}
+
+---
+*Task created via /backlog-grooming*
+"""
+
+        task = adapter.create_work_item(
+            work_item_type="Task",
+            title=task_data['title'],
+            description=task_description,
+            fields={
+                'System.Parent': feature['id'],  # Link to parent Feature
+                'System.State': 'Proposed',  # Ready for sprint planning
+                'System.Tags': 'epic-decomposed; ready-for-sprint'
+            }
+        )
+
+        print(f"    ✓ Created Task WI-{task['id']}: {task_data['title']} ({task_data['story_points']} pts)")
+
+# Update Epic state
+adapter.update_work_item(
+    work_item_id=epic_id,
+    state='Proposed',  # Mark as decomposed but not yet approved
+    fields={'System.Tags': epic.get('tags', '') + ';decomposed'}
+)
+
+print(f"✅ Epic WI-{epic_id} decomposed into {len(decomposition['features'])} Features")
+```
+
+4. Verify hierarchy created correctly:
+
+```python
+import sys
+
+print("\n🔍 Verifying Epic Decomposition Hierarchy...")
+print("=" * 80)
+print("CRITICAL: Implementing External Source of Truth verification (VISION.md Pillar #2)")
+print("=" * 80)
+
+verification_failed = False
+childless_features = []
+
+# STEP 1: Verify each Feature has at least one Task
+print(f"\n🔍 Verifying each Feature has child Tasks...")
+
+for feature_info in created_features:
+    feature_id = feature_info['id']
+    feature_title = feature_info['title']
+    expected_tasks = feature_info['expected_tasks']
+
+    # Query Tasks under this Feature from adapter (external source of truth)
+    try:
+        feature_tasks = adapter.query_work_items(
+            work_item_type='Task',
+            # Note: Azure DevOps and file-based adapters handle parent filtering differently
+            # We'll query and filter in Python for cross-platform compatibility
+        )
+
+        # Filter for Tasks with this Feature as parent
+        feature_tasks = [
+            task for task in feature_tasks
+            if task.get('parent_id') == feature_id or
+               task.get('fields', {}).get('System.Parent') == feature_id
+        ]
+
+        task_count = len(feature_tasks)
+
+        if task_count == 0:
+            print(f"❌ ERROR: Feature {feature_id} '{feature_title}' has no Tasks - workflow incomplete")
+            childless_features.append({
+                'id': feature_id,
+                'title': feature_title
+            })
+            verification_failed = True
+        else:
+            print(f"✅ Feature {feature_id} has {task_count} Task(s) (expected {expected_tasks})")
+
+            # Verify each Task has correct parent
+            for task in feature_tasks:
+                task_id = task.get('id')
+                parent_id = task.get('parent_id') or task.get('fields', {}).get('System.Parent')
+                if parent_id != feature_id:
+                    print(f"⚠️  WARNING: Task {task_id} parent mismatch (expected {feature_id}, got {parent_id})")
+
+    except Exception as e:
+        print(f"❌ ERROR: Failed to query Tasks for Feature {feature_id}: {e}")
+        verification_failed = True
+
+# STEP 2: Verify all Features are linked to parent Epic
+print(f"\n🔍 Verifying Features linked to Epic {epic_id}...")
+
+try:
+    # Query Features under this Epic from adapter (external source of truth)
+    epic_features = adapter.query_work_items(
+        work_item_type='Feature',
+    )
+
+    # Filter for Features with this Epic as parent
+    epic_features = [
+        feature for feature in epic_features
+        if feature.get('parent_id') == epic_id or
+           feature.get('fields', {}).get('System.Parent') == epic_id
+    ]
+
+    expected_feature_count = len(created_features)
+    actual_feature_count = len(epic_features)
+
+    if actual_feature_count != expected_feature_count:
+        print(f"❌ ERROR: Epic has {actual_feature_count} Features, expected {expected_feature_count}")
+        verification_failed = True
+    else:
+        print(f"✅ All {expected_feature_count} Feature(s) linked to Epic")
+
+except Exception as e:
+    print(f"❌ ERROR: Failed to query Features for Epic {epic_id}: {e}")
+    verification_failed = True
+
+# STEP 3: Verify story point summation within each Feature
+
+print("=" * 80)
+
+# STEP 5: Exit with error code if verification failed
+if verification_failed:
+    print(f"\n❌ VERIFICATION FAILED - Issues detected:")
+
+    if childless_features:
+        print(f"   {len(childless_features)} Feature(s) have no Tasks:")
+        for f in childless_features:
+            print(f"     • WI-{f['id']}: {f['title']}")
+
+
+    print(f"\n⚠️  Fix these issues before proceeding")
+    print(f"   Re-run decomposition or manually adjust story points")
+    sys.exit(1)  # Exit with error code
+else:
+    print(f"\n✅ VERIFICATION PASSED - All hierarchy checks successful")
+    print(f"   • All Features have at least one Task")
+    print(f"   • All Features are linked to Epic {epic_id}")
+    print(f"   • Epic decomposition is complete and verified")
+
+# STEP 6: Output verification checklist
+print(f"\n{'='*80}")
+print(f"📋 Epic Decomposition Verification Checklist")
+print(f"{'='*80}\n")
+
+# Item 1: Epic decomposed
+print(f"- [x] Epic WI-{epic_id} decomposed into {len(created_features)} Features")
+
+# Item 2: Features created with child count
+print(f"- [x] Features created:")
+for feature_info in created_features:
+    task_count = feature_info.get('expected_tasks', 0)
+    print(f"  - [x] Feature WI-{feature_info['id']}: {feature_info['title']} ({task_count} Tasks)")
+
+# Item 3: Tasks created per Feature
+total_tasks = sum(f.get('expected_tasks', 0) for f in created_features)
+print(f"- [x] {total_tasks} Tasks created across {len(created_features)} Features")
+
+# Item 4: Story points validated (conditional)
+print(f"- [ ] Story points validated (N/A - story points not configured)")
+
+# Item 5: Acceptance criteria validated
+# Check if Features have acceptance criteria
+features_with_ac = 0
+for feature_info in created_features:
+    try:
+        feature_full = adapter.get_work_item(feature_info['id'])
+        ac = feature_full.get('fields', {}).get('Microsoft.VSTS.Common.AcceptanceCriteria', '')
+        if ac and ac.strip():
+            features_with_ac += 1
+    except:
+        pass
+
+if features_with_ac == len(created_features):
+    print(f"- [x] Acceptance criteria validated ({features_with_ac}/{len(created_features)} Features have acceptance criteria)")
+elif features_with_ac > 0:
+    print(f"- [~] Acceptance criteria partially validated ({features_with_ac}/{len(created_features)} Features have acceptance criteria)")
+else:
+    print(f"- [ ] Acceptance criteria validated (0/{len(created_features)} Features have acceptance criteria)")
+
+print(f"\n{'='*80}")
+
+# STEP 7: Human approval gate
+print(f"\n⚠️  HUMAN REVIEW REQUIRED")
+print(f"Please review the checklist above before continuing to the next Epic.")
+print(f"This ensures all verification steps completed successfully.\n")
+
+approval = input("Type 'proceed' to continue to next Epic, or 'skip' to end grooming: ").strip().lower()
+
+if approval == 'skip':
+    print(f"\n✅ Backlog grooming ended by user")
+    break  # Exit Epic loop
+elif approval != 'proceed':
+    print(f"\n❌ Invalid input. Backlog grooming ended.")
+    break
+else:
+    print(f"\n✅ Continuing to next Epic...\n")
+```
+
+
+**If no Epics found, continue to Step 0.5.**
+
+---
+
+### Step 0.5: Detect and Handle Childless Work Items
+
+**Check for orphaned Epics and Features that need decomposition:**
+
+```python
+# Find Epics without Features (childless Epics)
+childless_epics = []
+for epic in adapter.query_work_items(filters={'System.WorkItemType': ['Epic']}):
+    children = adapter.query_work_items(filters={'System.Parent': epic['id']})
+    if len(children) == 0 and epic.get('state') not in ['Done', 'Removed']:
+        childless_epics.append(epic)
+
+# Find Features without parent Epic (standalone Features that might need breakdown)
+orphaned_features = []
+for feature in adapter.query_work_items(filters={'System.WorkItemType': ['Feature']}):
+    if not feature.get('parent') and feature.get('state') in ['New', 'Proposed']:
+        # Check if this Feature is too large (>20 story points suggests it needs breakdown)
+
+print(f"🔍 Found {len(childless_epics)} Epics needing decomposition")
+print(f"🔍 Found {len(orphaned_features)} large Features needing breakdown")
+
+# For childless Epics, decompose into Features (same process as Step 0)
+for epic in childless_epics:
+    print(f"\n📦 Decomposing childless Epic WI-{epic['id']}: {epic['title']}")
+    # Use the same Epic decomposition logic from Step 0
+    # Call /senior-engineer agent to break down Epic into Features
+    # Create Features as children of the Epic
+
+# Note: Orphaned Features stay as Features - they'll be broken into Tasks during /sprint-planning
+# We just flag them for review
+if orphaned_features:
+    print(f"\n⚠️  Large Features found (will be broken into Tasks during sprint planning):")
+    for feature in orphaned_features:
+        print(f"  WI-{feature['id']}: {feature['title']}")
+```
+
+---
+
+### Step 1: Business Analyst - Backlog Analysis
+
+1. **Read agent definition:** `.claude/agents/business-analyst.md`
+2. **Task:** "Analyze the following backlog items and perform business value assessment:
+   - Review each item for clarity and completeness
+   - Assign business value scores (1-100)
+   - Identify items that align with strategic goals
+   - Flag items with missing acceptance criteria
+   - Recommend prioritization"
+3. **Spawn agent** using Task tool with model `claude-sonnet-4-5`
+4. **Query backlog items:**
+   ```python
+   # Get backlog items in New/Proposed state
+   all_items = adapter.query_work_items()
+   backlog_items = [
+       item for item in all_items
+       if item.get('state') in ['New', 'Proposed']
+       and (item.get('type') or item.get('fields', {}).get('System.WorkItemType')) in ['User Story', 'Feature', 'User Story']
+   ]
+
+   print(f"📋 Backlog Items for Grooming ({len(backlog_items)}):")
+   for item in backlog_items:
+       print(f"  WI-{item['id']}: {item['title']} [{item['state']}]")
+   ```
+5. **Display output** to user:
+   - Read task result
+   - Format business value assessments
+   - Display recommendations
+6. **Collect:**
+   - Business value scores for each item
+   - Priority recommendations
+   - Gaps and missing information
+
+### Step 2: Project Architect - Technical Feasibility Review
+
+1. **Read agent definition:** `.claude/agents/architect.md`
+2. **Task:** "Review backlog items for technical feasibility and architecture implications:
+   - Identify technical dependencies
+   - Assess complexity and risk
+   - Flag items requiring architecture decisions
+   - Recommend technical spikes if needed
+   - Estimate relative effort (T-shirt sizing)"
+3. **Spawn agent** using Task tool with model `claude-opus-4-5`
+4. **Input:** Backlog items from Step 1
+5. **Display output** to user
+6. **Collect:**
+   - Technical risk assessments
+   - Dependency mappings
+   - Spike recommendations
+   - Effort estimates (S/M/L/XL)
+
+### Step 3: Human Review & Approval Gate
+
+**Instructions for User:**
+1. Review the business value assessments and technical evaluations
+2. Adjust priorities based on your knowledge
+3. Confirm which items should be refined further
+4. Type "proceed" to continue with updates
+
+**Wait for user confirmation before proceeding.**
+
+### Step 4: Update Work Items with Findings
+
+1. **For each backlog item to update:**
+   - Update Business Value field
+   - Update Technical Risk field
+   - Add refinement notes to description
+   - Update state to "Ready" if complete
+
+2. **Update work items with refinement data:**
+   ```python
+   # Update each refined item
+   for item in refined_items:
+       result = adapter.update_work_item(
+           work_item_id=item['id'],
+           state='Ready' if item.get('is_complete') else 'Proposed',
+           fields={
+               'Custom.BusinessValue': item.get('business_value'),
+               'Custom.TechnicalRisk': item.get('technical_risk'),
+           },
+           verify=True
+       )
+
+       # Add grooming notes as comment
+       if item.get('notes'):
+           adapter.add_comment(
+               work_item_id=item['id'],
+               comment=f"Grooming notes: {item['notes']}"
+           )
+
+       print(f"  ✓ Updated WI-{item['id']}: {item.get('title', 'Unknown')}")
+   ```
+
+3. **Track progress:**
+   ```python
+   state.record_work_item_updated(item_id, {'action': 'refined'})
+   ```
+
+### Step 5: Generate Grooming Summary
+
+Create summary report with:
+- Total items reviewed
+- Items moved to "Ready" state
+- Items requiring more information
+- Recommended items for next sprint
+- Outstanding technical questions
+
+## Success Criteria
+
+- ✅ All backlog items have business value scores
+- ✅ Technical risks identified and documented
+- ✅ Items ready for sprint planning are in "Ready" state
+- ✅ Missing information clearly flagged
+- ✅ Priorities aligned with business goals
+
+## Post-Workflow
+
+1. Share grooming summary with stakeholders
+2. Schedule follow-up meetings for unclear items
+3. Update product roadmap based on priorities
+4. Prepare refined backlog for sprint planning
+
+## Configuration
+
+**Agents Used:**
+- Business Analyst- Project Architect
+**Quality Standards:**
+- Business value scoring: 1-100 scale
+- Technical risk: Low/Medium/High
+- Minimum acceptance criteria: Yes/No
+
+**Work Item Types:**
+- User Story
+- Feature
+
+---
+
+*Generated by Trustable AI Workbench for ai-council*
