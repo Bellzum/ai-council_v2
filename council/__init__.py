@@ -24,6 +24,9 @@ from .models import (
     CouncilRound,
     AgentFeedback,
     ApprovalStatus,
+    UploadedDocument,
+    ConversationExchange,
+    AgentMemory,
 )
 from .orchestrator import CouncilOrchestrator
 
@@ -35,4 +38,7 @@ __all__ = [
     "AgentFeedback",
     "ApprovalStatus",
     "CouncilOrchestrator",
+    "UploadedDocument",
+    "ConversationExchange",
+    "AgentMemory",
 ]

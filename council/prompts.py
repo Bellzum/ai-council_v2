@@ -9,7 +9,7 @@ LEADER_CREATE_PROMPT = """## Council Task
 ## Initial Context
 
 {initial_context}
-
+{agent_context}
 ## Instructions
 
 Create a comprehensive document that addresses the council task.
@@ -38,7 +38,7 @@ LEADER_REVISE_PROMPT = """## Council Task
 The following concerns were raised by specialist agents. You MUST address each one:
 
 {aggregated_feedback}
-
+{agent_context}
 ## Instructions
 
 Revise the document to address ALL evaluator concerns.
@@ -71,7 +71,7 @@ You are "{evaluator_name}" - {evaluator_role_description}
 ## Your Perspective
 
 {evaluator_starting_prompt}
-
+{agent_context}
 ## Instructions
 
 Evaluate this document from your unique perspective.
@@ -101,16 +101,19 @@ Be specific and constructive in concerns and suggestions.
 def build_leader_create_prompt(
     council_prompt: str,
     initial_context: str,
-    evaluators: list
+    evaluators: list,
+    agent_context: str = ""
 ) -> str:
     """Build the prompt for leader's initial document creation."""
     evaluator_list = "\n".join(
         f"- **{e.name}**: {e.role_description}"
         for e in evaluators
     )
+    context_section = f"\n{agent_context}\n" if agent_context else ""
     return LEADER_CREATE_PROMPT.format(
         council_prompt=council_prompt,
         initial_context=initial_context or "(No initial context provided)",
+        agent_context=context_section,
         num_evaluators=len(evaluators),
         evaluator_list=evaluator_list
     )
@@ -119,28 +122,34 @@ def build_leader_create_prompt(
 def build_leader_revise_prompt(
     council_prompt: str,
     current_document: str,
-    aggregated_feedback: str
+    aggregated_feedback: str,
+    agent_context: str = ""
 ) -> str:
     """Build the prompt for leader's document revision."""
+    context_section = f"\n{agent_context}\n" if agent_context else ""
     return LEADER_REVISE_PROMPT.format(
         council_prompt=council_prompt,
         current_document=current_document,
-        aggregated_feedback=aggregated_feedback
+        aggregated_feedback=aggregated_feedback,
+        agent_context=context_section
     )
 
 
 def build_evaluator_prompt(
     document: str,
     council_prompt: str,
-    evaluator: "CouncilAgent"
+    evaluator: "CouncilAgent",
+    agent_context: str = ""
 ) -> str:
     """Build the prompt for an evaluator's review."""
+    context_section = f"\n{agent_context}\n" if agent_context else ""
     return EVALUATOR_PROMPT.format(
         document=document,
         council_prompt=council_prompt,
         evaluator_name=evaluator.name,
         evaluator_role_description=evaluator.role_description,
-        evaluator_starting_prompt=evaluator.starting_prompt
+        evaluator_starting_prompt=evaluator.starting_prompt,
+        agent_context=context_section
     )
 
 

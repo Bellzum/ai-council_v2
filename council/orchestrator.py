@@ -12,15 +12,16 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from typing import Callable, Optional, List
+from typing import Callable, Optional, List, Dict
 
 import anthropic
 
-from .models import (
+from council.models import (
     CouncilConfig, CouncilResult, CouncilRound,
-    AgentFeedback, CouncilAgent
+    AgentFeedback, CouncilAgent, AgentMemory, ConversationExchange
 )
-from .prompts import (
+from council.document_processor import count_tokens
+from council.prompts import (
     build_leader_create_prompt,
     build_leader_revise_prompt,
     build_evaluator_prompt,
@@ -51,6 +52,7 @@ class CouncilOrchestrator:
         config: CouncilConfig,
         api_key: str,
         model: str = "claude-sonnet-4-20250514",
+        agent_memories: Optional[Dict[str, AgentMemory]] = None,
         on_round_start: Optional[Callable[[int], None]] = None,
         on_leader_response: Optional[Callable[[str], None]] = None,
         on_evaluator_response: Optional[Callable[[str, AgentFeedback], None]] = None,
@@ -64,6 +66,7 @@ class CouncilOrchestrator:
             config: Council configuration with agents and prompt
             api_key: Anthropic API key
             model: Model to use (default: claude-sonnet-4-20250514)
+            agent_memories: Dict mapping memory_key to AgentMemory for context injection
             on_round_start: Callback when round begins
             on_leader_response: Callback when leader produces document
             on_evaluator_response: Callback when evaluator provides feedback
@@ -74,6 +77,7 @@ class CouncilOrchestrator:
         self.api_key = api_key
         self.model = model
         self.verbose = verbose
+        self.agent_memories = agent_memories or {}
 
         # Callbacks for UI integration
         self._on_round_start = on_round_start
@@ -91,6 +95,49 @@ class CouncilOrchestrator:
         """Log message if verbose mode enabled."""
         if self.verbose:
             print(message)
+
+    def _get_memory_context(self, agent: CouncilAgent) -> str:
+        """Get memory context string for an agent."""
+        if agent.memory_key and agent.memory_key in self.agent_memories:
+            memory = self.agent_memories[agent.memory_key]
+            return memory.get_context_for_prompt()
+        return ""
+
+    def _record_exchange(
+        self,
+        agent: CouncilAgent,
+        user_content: str,
+        assistant_content: str,
+        round_number: int
+    ):
+        """Record conversation exchange in agent memory."""
+        if not agent.memory_key or agent.memory_key not in self.agent_memories:
+            return
+
+        memory = self.agent_memories[agent.memory_key]
+
+        # Add user message (truncated for storage)
+        user_truncated = user_content[:1000]
+        memory.conversation_history.append(ConversationExchange(
+            role="user",
+            content=user_truncated,
+            token_count=count_tokens(user_truncated),
+            round_number=round_number
+        ))
+
+        # Add assistant response (truncated for storage)
+        assistant_truncated = assistant_content[:1000]
+        memory.conversation_history.append(ConversationExchange(
+            role="assistant",
+            content=assistant_truncated,
+            token_count=count_tokens(assistant_truncated),
+            round_number=round_number
+        ))
+
+        # Trim to max_exchanges * 2 (pairs)
+        max_messages = memory.max_exchanges * 2
+        if len(memory.conversation_history) > max_messages:
+            memory.conversation_history = memory.conversation_history[-max_messages:]
 
     async def run_council(self) -> CouncilResult:
         """
@@ -127,7 +174,7 @@ class CouncilOrchestrator:
                 self._log(f"[{self.config.leader.name}] Revising based on feedback...")
                 feedback_text = aggregate_feedback(rounds[-1].feedback)
                 current_document, leader_reasoning = await self._leader_revise(
-                    current_document, feedback_text
+                    current_document, feedback_text, round_num
                 )
 
             if self._on_leader_response:
@@ -135,7 +182,7 @@ class CouncilOrchestrator:
 
             # Phase 2: Evaluators critique in parallel
             self._log(f"\nEvaluating with {len(self.config.evaluators)} agents in parallel...")
-            feedback_list = await self._evaluate_parallel(current_document)
+            feedback_list = await self._evaluate_parallel(current_document, round_num)
 
             # Notify about each evaluation
             for fb in feedback_list:
@@ -186,26 +233,36 @@ class CouncilOrchestrator:
 
     async def _leader_create(self) -> str:
         """Have leader create initial document."""
+        leader = self.config.leader
+        agent_context = self._get_memory_context(leader)
+
         prompt = build_leader_create_prompt(
             council_prompt=self.config.council_prompt,
             initial_context=self.config.initial_context,
-            evaluators=self.config.evaluators
+            evaluators=self.config.evaluators,
+            agent_context=agent_context
         )
 
         response = await self.client.messages.create(
             model=self.model,
             max_tokens=4096,
-            system=self.config.leader.starting_prompt,
+            system=leader.starting_prompt,
             messages=[{"role": "user", "content": prompt}]
         )
 
         self.total_tokens += response.usage.input_tokens + response.usage.output_tokens
-        return response.content[0].text
+        result = response.content[0].text
+
+        # Record exchange in memory
+        self._record_exchange(leader, prompt, result, 1)
+
+        return result
 
     async def _leader_revise(
         self,
         current_document: str,
-        aggregated_feedback: str
+        aggregated_feedback: str,
+        round_number: int = 2
     ) -> tuple:
         """
         Have leader revise document based on feedback.
@@ -213,16 +270,20 @@ class CouncilOrchestrator:
         Returns:
             Tuple of (revised_document, revision_reasoning)
         """
+        leader = self.config.leader
+        agent_context = self._get_memory_context(leader)
+
         prompt = build_leader_revise_prompt(
             council_prompt=self.config.council_prompt,
             current_document=current_document,
-            aggregated_feedback=aggregated_feedback
+            aggregated_feedback=aggregated_feedback,
+            agent_context=agent_context
         )
 
         response = await self.client.messages.create(
             model=self.model,
             max_tokens=4096,
-            system=self.config.leader.starting_prompt,
+            system=leader.starting_prompt,
             messages=[{"role": "user", "content": prompt}]
         )
 
@@ -242,12 +303,19 @@ class CouncilOrchestrator:
             if "REASONING:" in reasoning_part:
                 reasoning = reasoning_part.split("REASONING:", 1)[1].strip()
 
+        # Record exchange in memory
+        self._record_exchange(leader, prompt, text, round_number)
+
         return document, reasoning
 
-    async def _evaluate_parallel(self, document: str) -> List[AgentFeedback]:
+    async def _evaluate_parallel(
+        self,
+        document: str,
+        round_number: int
+    ) -> List[AgentFeedback]:
         """Run all evaluators in parallel."""
         tasks = [
-            self._single_evaluation(evaluator, document)
+            self._single_evaluation(evaluator, document, round_number)
             for evaluator in self.config.evaluators
         ]
         return await asyncio.gather(*tasks)
@@ -255,13 +323,17 @@ class CouncilOrchestrator:
     async def _single_evaluation(
         self,
         evaluator: CouncilAgent,
-        document: str
+        document: str,
+        round_number: int
     ) -> AgentFeedback:
         """Get feedback from a single evaluator."""
+        agent_context = self._get_memory_context(evaluator)
+
         prompt = build_evaluator_prompt(
             document=document,
             council_prompt=self.config.council_prompt,
-            evaluator=evaluator
+            evaluator=evaluator,
+            agent_context=agent_context
         )
 
         response = await self.client.messages.create(
@@ -275,6 +347,9 @@ class CouncilOrchestrator:
         self.total_tokens += tokens
 
         text = response.content[0].text
+
+        # Record exchange in memory
+        self._record_exchange(evaluator, prompt, text, round_number)
 
         # Parse JSON response
         try:

@@ -6,9 +6,12 @@ Multi-agent consensus orchestration with live visualization.
 
 import asyncio
 import streamlit as st
+import anthropic
 
-from .models import CouncilConfig, CouncilAgent
-from .orchestrator import CouncilOrchestrator
+from council.models import CouncilConfig, CouncilAgent, AgentMemory, UploadedDocument
+from council.orchestrator import CouncilOrchestrator
+from council.document_processor import process_uploaded_file, count_tokens
+from council.summarizer import summarize_document
 
 
 def main():
@@ -25,6 +28,10 @@ def main():
         st.session_state.agents = []
     if "council_result" not in st.session_state:
         st.session_state.council_result = None
+    if "agent_memories" not in st.session_state:
+        st.session_state.agent_memories = {}
+    if "agent_documents" not in st.session_state:
+        st.session_state.agent_documents = {}
 
     # Sidebar
     st.sidebar.title("🏛️ AI Council")
@@ -120,11 +127,30 @@ def page_configure_agents():
             )
             st.session_state[f"agent_{i}_prompt"] = starting_prompt
 
+            # Document upload section
+            st.markdown("---")
+            st.markdown("**Reference Documents** (Optional)")
+            memory_key = f"memory_agent_{i}"
+
+            uploaded_files = st.file_uploader(
+                "Upload documents for this agent",
+                type=['pdf', 'docx', 'txt', 'md'],
+                accept_multiple_files=True,
+                key=f"upload_{i}",
+                help="PDF, Word, or text files that inform this agent's perspective"
+            )
+
+            if uploaded_files:
+                st.session_state.agent_documents[memory_key] = uploaded_files
+                for uf in uploaded_files:
+                    st.caption(f"📄 {uf.name} ({uf.size / 1024:.1f} KB)")
+
             agents.append(CouncilAgent(
                 name=name,
                 role_description=role_desc,
                 starting_prompt=starting_prompt,
-                is_leader=is_leader
+                is_leader=is_leader,
+                memory_key=memory_key
             ))
 
     st.session_state.agents = agents
@@ -139,8 +165,54 @@ def page_configure_agents():
             elif len(agents) < 2:
                 st.error("Need at least 2 agents")
             else:
+                # Process uploaded documents
+                with st.spinner("Processing uploaded documents..."):
+                    asyncio.run(process_agent_documents(api_key))
                 st.session_state.page = 2
                 st.rerun()
+
+
+async def process_agent_documents(api_key: str):
+    """Process all uploaded documents and create summaries."""
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+
+    for agent in st.session_state.agents:
+        memory_key = agent.memory_key
+        uploaded_files = st.session_state.agent_documents.get(memory_key, [])
+
+        if memory_key not in st.session_state.agent_memories:
+            st.session_state.agent_memories[memory_key] = AgentMemory(
+                agent_name=agent.name
+            )
+
+        memory = st.session_state.agent_memories[memory_key]
+
+        for uf in uploaded_files:
+            # Check if already processed
+            if any(d.filename == uf.name for d in memory.documents):
+                continue
+
+            try:
+                # Process file
+                file_content = uf.read()
+                uf.seek(0)  # Reset for potential re-read
+
+                extracted_text, content_type = process_uploaded_file(uf.name, file_content)
+                token_count = count_tokens(extracted_text)
+
+                # Generate summary
+                summary = await summarize_document(client, extracted_text)
+
+                doc = UploadedDocument(
+                    filename=uf.name,
+                    content_type=content_type,
+                    extracted_text=extracted_text,
+                    summary=summary,
+                    token_count=token_count
+                )
+                memory.documents.append(doc)
+            except Exception as e:
+                st.warning(f"Could not process {uf.name}: {str(e)}")
 
 
 def page_council_prompt():
@@ -267,6 +339,7 @@ def page_live_consensus():
     orchestrator = CouncilOrchestrator(
         config=config,
         api_key=st.session_state.api_key,
+        agent_memories=st.session_state.agent_memories,
         on_round_start=on_round_start,
         on_leader_response=on_leader_response,
         on_evaluator_response=on_evaluator_response,
