@@ -17,7 +17,7 @@ Usage:
     result = await orchestrator.run_council()
 """
 
-from .models import (
+from council.models import (
     CouncilConfig,
     CouncilAgent,
     CouncilResult,
@@ -28,7 +28,7 @@ from .models import (
     ConversationExchange,
     AgentMemory,
 )
-from .orchestrator import CouncilOrchestrator
+from council.orchestrator import CouncilOrchestrator
 
 __all__ = [
     "CouncilConfig",
