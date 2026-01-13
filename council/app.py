@@ -15,6 +15,7 @@ from council.summarizer import summarize_document
 
 
 def main():
+    st.title("🤖 AI Council v2")
     st.set_page_config(
         page_title="AI Council",
         page_icon="🏛️",
