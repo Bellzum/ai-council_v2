@@ -8,8 +8,8 @@ import asyncio
 import streamlit as st
 import anthropic
 
-from council.models import CouncilConfig, CouncilAgent, AgentMemory, UploadedDocument
-from council.orchestrator import CouncilOrchestrator
+from .models import CouncilConfig, CouncilAgent, AgentMemory, UploadedDocument
+from .orchestrator import CouncilOrchestrator
 from council.document_processor import process_uploaded_file, count_tokens
 from council.summarizer import summarize_document
 
